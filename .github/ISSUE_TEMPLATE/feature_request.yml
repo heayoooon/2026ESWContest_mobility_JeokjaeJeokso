@@ -3,6 +3,13 @@ description: "제목 예시: 'feat : 작업 내용'"
 title: "{feat/fix/refactor/chore} : "
 labels: []
 body:
+
+  - type: markdown
+    attributes:
+      value: |
+        **제목을 `{feat/fix/refactor/chore} : 작업 내용` 형식으로 작성해주세요**
+        예) `feat : 센서 기능 추가`
+
   - type: dropdown
     id: type
     attributes:
