@@ -1,0 +1,44 @@
+name: ✨ 새 작업
+description: 제목 예시: 'feat : 작업 내용'
+title: "{feat/fix/refactor/chore} : "
+labels: []
+body:
+
+  - type: dropdown
+    id: type
+    attributes:
+      label: 작업 유형
+      options:
+        - feat - 새로운 기능 추가
+        - fix - 버그 수정
+        - refactor - 코드 구조 개선
+        - chore - 기타 작업
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: 
+    validations:
+      required: true
+
+  - type: textarea
+    id: todo
+    attributes:
+      label: TODO
+      description: 
+      placeholder: |
+        - [ ] 
+        - [ ] 
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: 추가 사항
+      description: 
+    validations:
+      required: false
