@@ -1,9 +1,8 @@
 name: ✨ 새 작업
-description: 제목 예시: 'feat : 작업 내용'
+description: "제목 예시: 'feat : 작업 내용'"
 title: "{feat/fix/refactor/chore} : "
 labels: []
 body:
-
   - type: dropdown
     id: type
     attributes:
@@ -20,7 +19,6 @@ body:
     id: description
     attributes:
       label: Description
-      description: 
     validations:
       required: true
 
@@ -28,7 +26,6 @@ body:
     id: todo
     attributes:
       label: TODO
-      description: 
       placeholder: |
         - [ ] 
         - [ ] 
@@ -39,6 +36,5 @@ body:
     id: additional
     attributes:
       label: 추가 사항
-      description: 
     validations:
       required: false
