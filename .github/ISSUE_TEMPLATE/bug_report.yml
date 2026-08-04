@@ -1,0 +1,45 @@
+name: 🐛 버그 리포트
+description: 오작동, 에러, 예상과 다른 동작을 보고합니다
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: part
+    attributes:
+      label: 버그 발생한 파트
+      options:
+        - hardware (센서/배선/펌웨어)
+        - edge-computing (센서 퓨전/모션 보상/위험도 판정)
+        - server-visualization (FastAPI/WebSocket/2.5D 렌더링)
+        - 기타
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 버그 설명
+      description: 
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 재현 방법
+      description: 
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 예상 동작 / 실제 동작
+      render: shell
+    validations:
+      required: false
+
