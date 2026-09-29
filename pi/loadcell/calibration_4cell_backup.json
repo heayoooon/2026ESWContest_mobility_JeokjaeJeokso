@@ -1,8 +1,0 @@
-{
-  "offset": 130740.5,
-  "scale": 6.712962962962963,
-  "dt_pin": 5,
-  "sck_pin": 6,
-  "calibrated_with_grams": 162,
-  "method": "logger tare window 20-46s vs 162g window at end"
-}
