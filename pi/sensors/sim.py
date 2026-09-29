@@ -1,10 +1,10 @@
 """PC(VS Code)에서 파이 없이 log_xlsx.py 를 돌려보기 위한 가짜 센서.
 
-    python log_xlsx.py --sim
+    python acquisition/log_xlsx.py --sim      (pi/ 에서)
 
-HX711Bus / MPU6050 / Door 와 같은 메서드를 흉내 낸다. 값은 아래 시나리오로 만든다.
+HX711Bus / MPU6050 과 같은 메서드를 흉내 낸다. 값은 아래 시나리오로 만든다.
 
-    40초 주기   0~6s 정차 (0~3s 문 열림)   6~10s 가속   12~16s 좌회전
+    40초 주기   0~6s 정차   6~10s 가속   12~16s 좌회전
                 16~19s 제동   24~29s 우회전   34~38s 감속 정차
     18초에 한 번  제동하다 화물이 앞으로 밀리고(무게중심 이동) T1 벨트가 느슨해진다
 
@@ -14,8 +14,8 @@ import math
 import random
 import time
 
-from hx711_bus import HX711Timeout, Sample
-from mpu6050 import ACC_SCALE, GYR_SCALE, TEMP_OFFSET, TEMP_SCALE
+from sensors.hx711_bus import HX711Timeout, Sample
+from sensors.mpu6050 import ACC_SCALE, GYR_SCALE, TEMP_OFFSET, TEMP_SCALE
 
 CYCLE = 40.0            # 주행 시나리오 주기(초)
 SLIP_AT = 18.0          # 화물이 밀리는 시각(초). 한 번만
@@ -57,7 +57,6 @@ class Scenario:
             # 벨트 장력(N). 관성으로 화물이 벨트를 당기면 오른다
             "t1": 55 * tight - (28 if slipped else 0) + 25 * abs(ax),
             "t2": 60 * tight + 25 * abs(ay),
-            "door": 1 if c < 3.0 else 0,
         }
 
 
@@ -154,20 +153,6 @@ class SimMPU6050:
         temp = int(round((25.0 - TEMP_OFFSET) * TEMP_SCALE))
         return (t_ns, lsb(ax, ACC_SCALE), lsb(ay, ACC_SCALE), lsb(az, ACC_SCALE),
                 lsb(gx, GYR_SCALE), lsb(gy, GYR_SCALE), lsb(gz, GYR_SCALE), temp)
-
-    def close(self):
-        pass
-
-
-class SimDoor:
-    def __init__(self, scenario):
-        self.scn = scenario
-
-    def is_open(self):
-        return self.scn.at()["door"]
-
-    def describe(self):
-        return "시뮬레이션"
 
     def close(self):
         pass

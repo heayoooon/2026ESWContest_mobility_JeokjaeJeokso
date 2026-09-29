@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """HX711(공유 SCK) 6채널 + MPU-6050 2개를 공통 시계로 기록한다.
 
-    python3 log_sync.py                  # Ctrl+C 까지
-    LOG_SECONDS=60 python3 log_sync.py   # 60초
-    HX_DT=5,6,13 HX_LABELS=FL,FR,RL python3 log_sync.py
+    python3 acquisition/log_sync.py                  # Ctrl+C 까지
+    LOG_SECONDS=60 python3 acquisition/log_sync.py   # 60초
+    HX_DT=5,6,13 HX_LABELS=FL,FR,RL python3 acquisition/log_sync.py
 
 핀 배치는 전부 환경변수다. config.py 의 docstring 참고.
 
@@ -34,7 +34,9 @@ import sys
 import time
 from multiprocessing import get_context
 
-from config import Config
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pi/
+
+from acquisition.config import Config  # noqa: E402
 
 STATUS_EVERY = 0.5      # 화면 갱신 주기(초)
 FLUSH_EVERY = 1.0       # 파일 flush 주기(초)
@@ -60,7 +62,7 @@ def _boost_priority(q, who):
 
 def hx_worker(cfg, q, stop):
     signal.signal(signal.SIGINT, signal.SIG_IGN)    # 종료는 stop 이벤트로만
-    from hx711_bus import HX711Bus, HX711Timeout
+    from sensors.hx711_bus import HX711Bus, HX711Timeout
 
     _boost_priority(q, "hx711")
     try:
@@ -100,7 +102,7 @@ def hx_worker(cfg, q, stop):
 
 def imu_worker(cfg, q, stop):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    from mpu6050 import MPU6050
+    from sensors.mpu6050 import MPU6050
 
     mpus = []
     for addr, label in zip(cfg.imu_addrs, cfg.imu_labels):
@@ -208,7 +210,7 @@ def main():
 
     # 끝까지 다 기록해놓고 마지막에 import 로 죽는 일이 없게 여기서 확인한다
     try:
-        from mpu6050 import scales
+        from sensors.mpu6050 import scales
         imu_scales = scales()
     except Exception as e:
         print("! mpu6050 import 실패 (%s). IMU 없이 진행한다. pip install smbus2\n" % e)

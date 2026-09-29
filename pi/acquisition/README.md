@@ -1,7 +1,10 @@
-# pi/time — HX711 + MPU-6050 동기 타임스탬프 로거
+# pi/acquisition — HX711 + MPU-6050 동기 타임스탬프 로거
 
 HX711 여러 개(공유 SCK)와 MPU-6050 2개를 **하나의 시계**로 기록한다.
 핀 번호는 코드에 없고 전부 환경변수다.
+
+드라이버는 `pi/sensors/`, 보정은 `pi/calibration/`, 배선 점검은 `pi/tools/` 에 있다.
+**아래 명령은 전부 `pi/` 폴더에서 실행한다.**
 
 ## 배선
 
@@ -52,7 +55,7 @@ SCK 한 줄을 모든 모듈에 병렬로 물린다. DT 만 모듈마다 따로 
 엣지 시차가 사실상 없고, 공유 배선과 같은 동시성을 얻는다.
 
 ```bash
-HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 log_sync.py
+HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/log_sync.py
 ```
 
 `describe()` 가 `SCK=group_write` 로 나오면 동시 토글이 걸린 것이다.
@@ -64,11 +67,6 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 log_sync.py
 두 센서 모두 `VCC→3.3V`, `GND→GND`, `SDA→GPIO2`(물리 3), `SCL→GPIO3`(물리 5).
 구분은 핀이 아니라 **주소**다: `AD0→3.3V` 인 쪽이 `0x69`, 비운 쪽이 `0x68`.
 버스 하나에 주소가 둘뿐이라 2개가 한계다.
-
-### 문 센서 (MC-38)
-
-리드 스위치 두 가닥 중 하나는 `DOOR_PIN`, 하나는 GND. 내부 풀업을 걸어서
-문 닫힘(자석 붙음) = LOW, 열림 = HIGH 로 읽는다. 반대로 나오면 `DOOR_INVERT=1`.
 
 ## 환경변수
 
@@ -92,22 +90,20 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 log_sync.py
 | `IMU_ADDRS` | `0x68,0x69` | 주소 |
 | `IMU_LABELS` | `imu1,imu2` | 주소 순서대로 붙일 이름 |
 | `IMU_HZ` | `100` | 목표 샘플레이트 |
-| `IMU_CAL` | 자동 | `imu_cal.json` 경로. 비우면 `./` → `../imu/` → `~/imu/` 순으로 찾는다 |
-| `DOOR_PIN` | 없음 | 문 센서 BCM 핀. 비우면 문 센서 없이 기록 |
-| `DOOR_INVERT` | `0` | 1 이면 열림/닫힘을 뒤집는다 |
-| `LOG_DIR` | `./logs` | 로그 상위 폴더 |
+| `IMU_CAL` | 자동 | `imu_cal.json` 경로. 비우면 `calibration/imu_cal.json` |
+| `LOG_DIR` | `acquisition/logs` | 로그 상위 폴더 |
 | `LOG_SECONDS` | `0` | 기록 길이. 0 이면 Ctrl+C 까지 |
 | `LOG_NAME` | 시각 | 런 이름 (`log_sync.py` 는 폴더, `log_xlsx.py` 는 파일 이름) |
 
 ```bash
 # 설정 확인만
-python3 config.py
+python3 acquisition/config.py
 
 # 4채널만, 모서리 이름으로
-HX_DT=5,6,13,19 HX_LABELS=FL,FR,RL,RR python3 log_sync.py
+HX_DT=5,6,13,19 HX_LABELS=FL,FR,RL,RR python3 acquisition/log_sync.py
 
 # 60초 기록
-LOG_SECONDS=60 python3 log_sync.py
+LOG_SECONDS=60 python3 acquisition/log_sync.py
 ```
 
 ## 순서
@@ -118,23 +114,23 @@ LOG_SECONDS=60 python3 log_sync.py
 i2cdetect -y 1
 
 # 1) 모듈 1개만 꽂고 확인 -> 되면 하나씩 추가
-HX_DT=5 HX_LABELS=c1 python3 check_wiring.py
+HX_DT=5 HX_LABELS=c1 python3 tools/check_wiring.py
 
 # 2) 6개 다 붙었으면 전체 확인
-python3 check_wiring.py
+python3 tools/check_wiring.py
 
 # 3) 모서리를 하나씩 눌러 라벨 확정 (움직이는 채널에 * 가 붙는다)
-python3 check_wiring.py live
+python3 tools/check_wiring.py live
 
 # 4) 기록 (raw CSV). 사람이 볼 엑셀은 아래 log_xlsx.py
-HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 log_sync.py
+HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 acquisition/log_sync.py
 ```
 
 ## 센서 전부 → 엑셀 (`log_xlsx.py`)
 
-바닥 로드셀(하중)·벨트 장력·IMU·문 센서를 한 시계로 읽어 **시간순 엑셀** 로 남긴다.
+바닥 로드셀(하중)·벨트 장력·IMU 를 한 시계로 읽어 **시간순 엑셀** 로 남긴다.
 한 행 = HX711 샘플 한 번(약 10Hz). HX711 변환을 기다리는 ~100ms 동안 IMU 를
-`IMU_HZ` 로 읽어 그 구간 평균을 같은 행에 붙이고, 문 센서는 행마다 한 번 읽는다.
+`IMU_HZ` 로 읽어 그 구간 평균을 같은 행에 붙인다.
 
 ### PC 에서 먼저 (VS Code, 파이 없이)
 
@@ -143,12 +139,12 @@ HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 log_sync.py
 
 ```bash
 pip install openpyxl                  # 처음 한 번
-cd pi/time
-python log_xlsx.py --sim              # Ctrl+C 로 끝. LOG_SECONDS=30 이면 30초
+cd pi
+python acquisition/log_xlsx.py --sim              # Ctrl+C 로 끝. LOG_SECONDS=30 이면 30초
 ```
 
-VS Code 는 `코드/` 폴더를 연 상태에서 **실행 및 디버그(F5) → "센서 로거 - PC 시뮬레이션 (30초)"**.
-결과는 `pi/time/logs/sim_<시각>.xlsx`. 시뮬레이션 결과는 파일 이름이 `sim_` 으로
+VS Code 실행 구성(F5)을 쓴다면 program 경로를 `pi/acquisition/log_xlsx.py` 로 맞춘다.
+결과는 `pi/acquisition/logs/sim_<시각>.xlsx`. 시뮬레이션 결과는 파일 이름이 `sim_` 으로
 시작하고 요약 시트에도 "시뮬레이션" 이라고 적혀서 실측과 섞이지 않는다.
 
 ### 파이에서
@@ -158,16 +154,16 @@ HX711 원시값은 카운트라서 채널마다 영점과 배율이 있어야 g 
 바꿔 적는다 (1 kgf = 9.81 N).
 
 ```bash
-# DOOR_PIN / BED_L / BED_W 는 예시. 실제 핀과 셀 간격(mm)으로
-export HX_DT=5,6,13,19,26,20 HX_LABELS=FL,FR,RL,RR,T1,T2 DOOR_PIN=23 BED_L=400 BED_W=600
+# BED_L / BED_W 는 예시. 실제 셀 간격(mm)으로
+export HX_DT=5,6,13,19,26,20 HX_LABELS=FL,FR,RL,RR,T1,T2 BED_L=400 BED_W=600
 
-python3 calibrate.py tare            # 판 비우고 벨트 풀고 -> 전 채널 영점
-python3 calibrate.py span 1000       # 판 위에 1kg (위치 무관) -> 바닥 셀 공통 배율
-python3 calibrate.py cell T1 1000    # T1 고리에 1kg 매달기 -> 장력 배율
-python3 calibrate.py cell T2 1000
-python3 calibrate.py show            # 확인
+python3 calibration/calibrate.py tare            # 판 비우고 벨트 풀고 -> 전 채널 영점
+python3 calibration/calibrate.py span 1000       # 판 위에 1kg (위치 무관) -> 바닥 셀 공통 배율
+python3 calibration/calibrate.py cell T1 1000    # T1 고리에 1kg 매달기 -> 장력 배율
+python3 calibration/calibrate.py cell T2 1000
+python3 calibration/calibrate.py show            # 확인
 
-LOG_SECONDS=60 python3 log_xlsx.py   # 60초 -> logs/<시각>.xlsx
+LOG_SECONDS=60 python3 acquisition/log_xlsx.py   # 60초 -> acquisition/logs/<시각>.xlsx
 ```
 
 - `span` 은 바닥 채널 **합**이 올린 무게와 맞게 공통 배율 하나를 구한다(장력 채널은 빠진다).
@@ -180,7 +176,7 @@ LOG_SECONDS=60 python3 log_xlsx.py   # 60초 -> logs/<시각>.xlsx
   영점 잡을 때의 반전 상태가 남아서, 안 맞으면 `span`/`cell` 은 거부하고 로거는 그 채널을 raw 만 적는다.
 - 보정값이 없는 채널은 g/N 없이 raw 만 적고, 요약 시트 메모에 남는다.
 - 시작할 때 DT 가 안 떨어지는 모듈은 **빼고** 기록한다 (화면 경고 + 요약 시트 메모).
-- IMU 는 `pi/imu` 의 `imu_cal.json` 을 찾아 바이어스를 빼고 장착 자세(up 축)를 돌린다.
+- IMU 는 `calibration/imu_cal.json` 을 찾아 바이어스를 빼고 장착 자세(up 축)를 돌린다.
   못 찾으면 보정 없이 적고, IMU 가 아예 없어도 나머지는 기록한다.
 - SSH 로 길게 돌릴 땐 `tmux` 안에서. SSH 가 끊기면(SIGHUP) 그때까지를 엑셀로 만들고 끝난다.
 
@@ -193,8 +189,7 @@ LOG_SECONDS=60 python3 log_xlsx.py   # 60초 -> logs/<시각>.xlsx
 | 무게중심 X, Y | 계획서 식. 앞왼 셀이 원점, X 는 앞왼→앞오, Y 는 앞왼→뒤왼 방향. `BED_L`/`BED_W` 를 주면 mm, 아니면 % (50 = 가운데). 총하중 100g 미만이면 빈칸 |
 | T1 장력(N) … | 벨트 장력 |
 | imu1 ax(G) … gz(°/s) | 행 구간 평균 |
-| imu1 roll/pitch(°) | 상보필터 기울기 (`pi/imu/imu_angle.py` 와 같은 방식). 가감속·선회 중엔 가속도가 섞여 틀어지므로 정차 중 값이 적재함 기울기 |
-| 문 열림 | 1 = 열림 |
+| imu1 roll/pitch(°) | 상보필터 기울기 (`tools/imu_angle.py` 와 같은 방식). 가감속·선회 중엔 가속도가 섞여 틀어지므로 정차 중 값이 적재함 기울기 |
 | FL raw … | HX711 원시값. 보정을 다시 하면 여기서 다시 계산할 수 있다 |
 | flags | `sck_high`(타이밍 깨짐), `stuck_hi:FL`(모듈 응답 없음), `imu_miss:imu1` 등 |
 
@@ -205,12 +200,12 @@ LOG_SECONDS=60 python3 log_xlsx.py   # 60초 -> logs/<시각>.xlsx
 |---|---|
 | `logs/<이름>.xlsx` | 끝날 때(Ctrl+C / `LOG_SECONDS` / kill / SSH 끊김) CSV 로 만든다 |
 | `logs/<이름>.csv` | 기록하면서 1초마다 디스크에 쓴다. 전원이 나가도 여기까지 남고 엑셀로 바로 열린다 (UTF-8 BOM) |
-| `calib.json` | 채널별 offset / scale. `time/` 폴더에 생긴다 |
+| `calibration/calib.json` | 채널별 offset / scale. `calibration/calibrate.py` 가 만든다 |
 
 CSV 만 남았을 때(전원 차단 등) 엑셀 다시 만들기:
 
 ```bash
-python3 -c "import log_xlsx; log_xlsx.build_xlsx('logs/X.csv', 'logs/X.xlsx')"
+python3 -c "from acquisition import log_xlsx; log_xlsx.build_xlsx('acquisition/logs/X.csv', 'acquisition/logs/X.xlsx')"
 ```
 
 ## `log_sync.py` 가 만드는 파일
@@ -259,7 +254,7 @@ m = pd.merge_asof(load.sort_values("t"), imu.sort_values("t"),
 수 ms 동안 HIGH 로 머물 수 있고 그 샘플이 깨진다. HX711 수집 / IMU 수집 /
 파일 쓰기를 별 프로세스로 두면 그 간섭이 없다. 추가로
 `os.sched_setscheduler(SCHED_FIFO)` 를 시도하는데 root 가 필요하므로,
-타이밍이 불안하면 `sudo -E python3 log_sync.py` (환경변수 유지) 로 돌린다.
+타이밍이 불안하면 `sudo -E python3 acquisition/log_sync.py` (환경변수 유지) 로 돌린다.
 
 **그래도 넘칠 수 있으므로** 매 샘플마다 실제 SCK HIGH 폭을 재서 `sck_us` 열에 남기고,
 60us 를 넘으면 `flags` 에 `sck_high` 를 붙인다. 이 플래그가 많으면 그 구간 값은
@@ -283,8 +278,6 @@ LOW = "준비됨" 으로 오인된다. 풀업이면 HIGH(=안 준비됨)로 남�
 
 ## 주의
 
-- 폴더 이름이 `time` 이지만 `import time` 은 문제없다(내장 모듈이 우선). 다만
-  이 폴더에 `time.py` 를 만들면 안 된다.
 - 브레드보드 24가닥은 차량이 움직이면 접촉 불량이 난다. 주행용으로는 만능기판에
   납땜하거나 최소한 SCK 버스를 고정할 것.
 - `sudo` 로 돌릴 때는 `-E` 를 붙여야 환경변수가 유지된다.

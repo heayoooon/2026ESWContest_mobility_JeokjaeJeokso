@@ -8,19 +8,19 @@ HX711 의 원시값은 그냥 카운트다. 무게(g)로 바꾸려면 채널마�
 핀 배치는 log_sync.py 와 같은 환경변수를 쓴다 (config.py 참고).
 
     # 1) 영점: 판 위를 비우고 장력 벨트도 풀어둔다 (전 채널)
-    python3 calibrate.py tare
+    python3 calibration/calibrate.py tare
 
     # 2) 배율: 아는 무게를 판 위에 올리고 (어디에 올려도 된다)
-    python3 calibrate.py span 1000        # 1000 g
+    python3 calibration/calibrate.py span 1000        # 1000 g
 
     # 바닥 셀마다 배율 따로: 같은 무게를 판 위 5군데에 차례로 올린다 (권장)
-    python3 calibrate.py multi 5000
+    python3 calibration/calibrate.py multi 5000
 
     # 장력(인장형) 셀: 아는 무게를 그 셀 고리에 매단다
-    python3 calibrate.py cell T1 1000
+    python3 calibration/calibrate.py cell T1 1000
 
     # 지금 값 보기
-    python3 calibrate.py show
+    python3 calibration/calibrate.py show
 
 `span` 은 바닥 하중 채널의 합이 올린 무게와 맞도록 **공통 배율 하나**를 구한다. 네 셀의
 감도가 정말 같을 때만 맞고, 다르면 무게를 어디 올렸느냐에 따라 총하중이 달라진다.
@@ -44,8 +44,10 @@ import statistics
 import sys
 import time
 
-from config import Config
-from hx711_bus import HX711Bus
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pi/
+
+from acquisition.config import Config  # noqa: E402
+from sensors.hx711_bus import HX711Bus  # noqa: E402
 
 CALIB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calib.json")
 N_SAMPLES = 20          # 평균 낼 샘플 수
@@ -137,10 +139,10 @@ def cmd_span(cfg, grams):
     c = load_calib()
     missing = [l for l in weight if l not in c["offset"]]
     if missing:
-        sys.exit("영점이 없는 채널: %s  -> 먼저 `python3 calibrate.py tare`" % ", ".join(missing))
+        sys.exit("영점이 없는 채널: %s  -> 먼저 `python3 calibration/calibrate.py tare`" % ", ".join(missing))
     flipped = stale(c, cfg, weight)
     if flipped:
-        sys.exit("HX_INVERT 가 영점 잡을 때와 다른 채널: %s  -> 먼저 `python3 calibrate.py tare`"
+        sys.exit("HX_INVERT 가 영점 잡을 때와 다른 채널: %s  -> 먼저 `python3 calibration/calibrate.py tare`"
                  % ", ".join(flipped))
 
     print("%g g 을 판 위에 올리세요. 3초 뒤 시작합니다." % grams)
@@ -170,9 +172,9 @@ def cmd_cell(cfg, label, grams):
         sys.exit("모르는 채널 %r. 지금 라벨: %s" % (label, ", ".join(cfg.hx_labels)))
     c = load_calib()
     if label not in c["offset"]:
-        sys.exit("%s 의 영점이 없다 -> 먼저 `python3 calibrate.py tare`" % label)
+        sys.exit("%s 의 영점이 없다 -> 먼저 `python3 calibration/calibrate.py tare`" % label)
     if stale(c, cfg, [label]):
-        sys.exit("%s 는 HX_INVERT 가 영점 잡을 때와 다르다 -> 먼저 `python3 calibrate.py tare`" % label)
+        sys.exit("%s 는 HX_INVERT 가 영점 잡을 때와 다르다 -> 먼저 `python3 calibration/calibrate.py tare`" % label)
 
     _, tension, _ = cfg.roles()
     where = "%s 고리에 매다세요" % label if label in tension else "%s 모서리 바로 위에 올리세요" % label
@@ -417,15 +419,15 @@ def main():
         cmd_tare(cfg)
     elif cmd == "span":
         if len(sys.argv) < 3:
-            sys.exit("사용법: python3 calibrate.py span <그램>")
+            sys.exit("사용법: python3 calibration/calibrate.py span <그램>")
         cmd_span(cfg, float(sys.argv[2]))
     elif cmd == "multi":
         if len(sys.argv) < 3:
-            sys.exit("사용법: python3 calibrate.py multi <그램>")
+            sys.exit("사용법: python3 calibration/calibrate.py multi <그램>")
         cmd_multi(cfg, float(sys.argv[2]))
     elif cmd == "cell":
         if len(sys.argv) < 4:
-            sys.exit("사용법: python3 calibrate.py cell <라벨> <그램>")
+            sys.exit("사용법: python3 calibration/calibrate.py cell <라벨> <그램>")
         cmd_cell(cfg, sys.argv[2], float(sys.argv[3]))
     elif cmd == "show":
         cmd_show(cfg)

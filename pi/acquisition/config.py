@@ -31,12 +31,8 @@ MPU-6050
   IMU_ADDRS    주소, 쉼표 구분                           기본 0x68,0x69
   IMU_LABELS   주소 순서대로 붙일 이름                   기본 imu1,imu2
   IMU_HZ       목표 샘플레이트                           기본 100
-  IMU_CAL      imu_cal.json 경로 (pi/imu/imu_calibrate.py 결과).
-               비우면 ./imu_cal.json -> ../imu/ -> ~/imu/ 순으로 찾는다
-
-문 열림 센서 (MC-38 리드 스위치, 한쪽 선 GND)
-  DOOR_PIN     BCM 핀. 비우면 문 센서 없이 기록           기본 없음
-  DOOR_INVERT  1 이면 열림/닫힘을 뒤집는다               기본 0
+  IMU_CAL      imu_cal.json 경로 (calibration/imu_calibrate.py 결과).
+               비우면 calibration/imu_cal.json
 
 로그
   LOG_DIR      로그가 쌓일 상위 폴더                     기본 ./logs
@@ -44,10 +40,10 @@ MPU-6050
   LOG_NAME     이번 런 이름(폴더/파일 이름). 비우면 시각으로 자동
 
 예)
-  HX_DT=5,6,13 HX_LABELS=FL,FR,RL python3 log_sync.py
-  HX_SCK=17 LOG_SECONDS=60 python3 log_sync.py
+  HX_DT=5,6,13 HX_LABELS=FL,FR,RL python3 acquisition/log_sync.py
+  HX_SCK=17 LOG_SECONDS=60 python3 acquisition/log_sync.py
   # 모듈별 SCK (4모서리)
-  HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 log_sync.py
+  HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/log_sync.py
 """
 import os
 import time
@@ -106,11 +102,6 @@ class Config:
         self.imu_hz = _int("IMU_HZ", 100)
         self.imu_cal = _str("IMU_CAL", "")
 
-        # --- 문 센서 -----------------------------------------------------
-        door = _str("DOOR_PIN", "")
-        self.door_pin = int(door, 0) if door else None
-        self.door_invert = _int("DOOR_INVERT", 0) != 0
-
         # --- 로그 --------------------------------------------------------
         self.log_dir = _str("LOG_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
         self.log_seconds = _float("LOG_SECONDS", 0)
@@ -155,10 +146,6 @@ class Config:
             raise SystemExit("BED_L 과 BED_W 는 둘 다 주거나 둘 다 비운다")
         if self.bed_l is not None and (self.bed_l < 0 or self.bed_w < 0):
             raise SystemExit("BED_L / BED_W 는 양수(mm)")
-        if self.door_pin is not None:
-            if self.door_pin in set(self.hx_dt) | set(self.hx_sck) | {2, 3}:
-                raise SystemExit("DOOR_PIN(GPIO%d) 이 HX711 핀이나 I2C(GPIO2/3)와 겹친다"
-                                 % self.door_pin)
 
     def roles(self, labels=None):
         """(하중 라벨, 장력 라벨, 무게중심 모서리 4개 또는 None).
@@ -186,7 +173,6 @@ class Config:
                 "tension": self.hx_tension, "cog_corners": self.cog_corners,
                 "bed_mm": [self.bed_l, self.bed_w] if self.bed_l else None,
             },
-            "door": {"pin": self.door_pin, "invert": self.door_invert},
             "log": {"dir": self.log_dir, "seconds": self.log_seconds, "name": self.log_name},
         }
 
@@ -206,19 +192,15 @@ class Config:
                                        if self.bed_l else "% 단위")
         else:
             cog = "무게중심 안 함 (COG_CORNERS=%s 가 하중 라벨에 없음)" % ",".join(self.cog_corners)
-        door = ("GPIO%d%s" % (self.door_pin, " 반전" if self.door_invert else "")
-                if self.door_pin is not None else "없음")
         inv = "  부호반전 [%s]" % ",".join(self.hx_invert) if self.hx_invert else ""
         return (
             "HX711  %s  %d채널  [%s]  gain=%d pull=%s rate=%dSPS%s\n"
             "역할   하중 [%s]  장력 [%s]  %s\n"
             "IMU    bus%d  [%s]  target=%dHz\n"
-            "문     %s\n"
             "LOG    %s/%s  %s"
             % (head, len(self.hx_dt), pairs, self.hx_gain, self.hx_pull, self.hx_rate, inv,
                ",".join(weight), ",".join(tension), cog,
                self.imu_bus, imus, self.imu_hz,
-               door,
                self.log_dir, self.log_name,
                ("%.0f초" % self.log_seconds) if self.log_seconds else "Ctrl+C 까지")
         )

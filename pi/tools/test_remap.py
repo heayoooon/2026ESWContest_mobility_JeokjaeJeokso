@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Unit test for the axis remap in mpu6050_lib: gravity maps to +Z for every 'up',
+"""Unit test for the axis remap in sensors/mpu6050: gravity maps to +Z for every 'up',
 rotations are right-handed (det = +1), and a physical tilt reads the same angle
-whatever way the module is mounted."""
+whatever way the module is mounted. Runs on a PC too (no sensor needed)."""
 import math
+import os
+import sys
 
-from mpu6050_lib import REMAP, MPU6050, detect_up
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pi/
 
-tilt = MPU6050.tilt
+from sensors.mpu6050 import REMAP, detect_up, tilt  # noqa: E402
+
 ok = True
 for up, (x, y, z) in {"+z": (0, 0, 1), "-z": (0, 0, -1), "+x": (1, 0, 0),
                       "-x": (-1, 0, 0), "+y": (0, 1, 0), "-y": (0, -1, 0)}.items():
@@ -35,7 +38,7 @@ for up in REMAP:
     g = (-math.sin(p), math.cos(p) * math.sin(rl), math.cos(p) * math.cos(rl))  # gravity in remapped frame
     chip = inverse(up)(*g)                       # what the chip would measure if mounted with this 'up'
     back = REMAP[up](*chip)                      # what read() would return
-    roll, pitch = tilt({"ax": back[0], "ay": back[1], "az": back[2]})
+    roll, pitch = tilt(back[0], back[1], back[2])
     good = abs(pitch - 30) < 1e-6 and abs(roll - 20) < 1e-6
     ok &= good
     print(f"mount up={up}: physical pitch 30 / roll 20 -> reads pitch={pitch:+.3f} roll={roll:+.3f} {'OK' if good else 'BAD'}")

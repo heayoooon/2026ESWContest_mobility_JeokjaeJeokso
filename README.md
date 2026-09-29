@@ -35,8 +35,10 @@
 
 | 경로 | 내용 |
 |---|---|
-| `pi/loadcell/` | HX711 드라이버(lgpio 비트뱅), 모듈 자동 탐색, 보정 · 계량 · CSV 로거 |
-| `pi/imu/` | MPU-6050 드라이버(smbus2), 장착 방향 인식 보정, 실시간 roll/pitch, I2C 진단 도구 |
+| `pi/sensors/` | 센서 드라이버: HX711 다채널(하중 · 장력), MPU-6050(I2C 직결 · ESP32 UDP), PC용 가짜 센서 |
+| `pi/acquisition/` | 공통 시계(`CLOCK_MONOTONIC`) 기반 수집 · 정렬 · 기록 (`log_sync.py` raw CSV, `log_xlsx.py` 엑셀) |
+| `pi/calibration/` | 로드셀 영점 · 배율(`calib.json`), IMU 바이어스 · 장착 방향(`imu_cal.json`) |
+| `pi/tools/` | HX711 배선 점검, IMU 스캔 · 실시간 각도, I2C 진단 |
 | `display/avtest/` | 7인치 DSI 화면 · USB 스피커 동작 확인 |
 | `display/cameratest/` | RealSense D435i 진단 (`test_d435i.py`, `ir_probe.py`) + Pi 5용 librealsense 소스 빌드 절차 |
 | `viz/digital-twin/` | 영상 → 포토그래메트리 → Blender 정리 → Unity 씬 생성 파이프라인 |
@@ -94,31 +96,22 @@ ssh <계정>@display    # 화면 · 스피커 · D435i
 
 ## 모듈별 실행법
 
-### 로드셀 — `pi:~/loadcell`
+### 로드셀 · IMU — `pi/`
+
+명령은 전부 `pi/` 폴더에서 실행한다. 폴더 구성은 [`pi/README.md`](pi/README.md),
+환경변수 · 배선 · 로그 형식은 [`pi/acquisition/README.md`](pi/acquisition/README.md).
 
 ```bash
-python3 scan_hx711.py      # 헤더에서 HX711 자동 탐색 -> cells.json
-python3 read_all.py        # 모든 셀 raw 동시 표시 (배선 확인)
-python3 check_cells.py     # 모듈별 raw/노이즈/브리지 상태 + 현재 g
-python3 calibrate_all.py   # 셀마다 영점 + 아는 무게 -> cal_cells.json
-python3 weigh_all.py       # 실시간 g (--tare 로 재영점)
-python3 logger_all.py 600  # 10 Hz raw -> log_all.csv
+source acquisition/env.sh                       # 핀 / 라벨 / 역할 (환경변수)
+python3 tools/check_wiring.py                   # HX711 배선 확인 (live 로 모서리 라벨 확정)
+python3 calibration/calibrate.py tare           # 로드셀 영점 -> span / multi / cell 로 배율
+python3 calibration/imu_calibrate.py --auto     # IMU rest pose 보정 -> imu_cal.json
+python3 tools/imu_angle.py                      # IMU 실시간 roll/pitch (상보필터 α=0.98)
+LOG_SECONDS=60 python3 acquisition/log_xlsx.py  # 전 센서 한 시계로 -> 엑셀
+python acquisition/log_xlsx.py --sim            # PC 에서 가짜 센서로
 ```
 
-`scan_hx711_full.py`는 GPIO2/3과 SCK 공유 구성까지 뒤지지만 **I2C 핀을 건드리므로** 실행 후
-`sudo dtparam i2c_arm=off && sleep 1 && sudo dtparam i2c_arm=on` 으로 리셋해야 IMU가 다시 살아난다.
-
-### IMU — `pi:~/imu`
-
-```bash
-python3 imu_scan.py                          # 버스별 장치 + 센서별 raw 1샘플
-python3 imu_angle.py                         # 실시간 roll/pitch (상보필터 α=0.98)
-python3 imu_calibrate.py --auto              # rest pose로 두고 가속도+자이로 보정
-python3 imu_calibrate.py --auto --gyro-only  # 자이로만 (정지만 필요)
-python3 test_remap.py                        # 6개 장착 방향 x 30/20도 검증
-```
-
-보정은 **"0도로 삼고 싶은 자세(rest pose)"** 로 두고 돌린다. 스크립트가 중력이 실린 축을 자동
+IMU 보정은 **"0도로 삼고 싶은 자세(rest pose)"** 로 두고 돌린다. 스크립트가 중력이 실린 축을 자동
 감지해 `imu_cal.json`에 `up`으로 저장하고, 읽을 때 축을 돌려서 모듈이 세워져 있어도 각도가 맞는다.
 
 ### 화면 · 스피커 — `display:~/avtest`

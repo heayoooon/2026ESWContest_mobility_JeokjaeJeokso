@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """공유 SCK 배선 점검. 모듈을 하나씩 붙이면서 이걸로 확인한다.
 
-    python3 check_wiring.py          # 1) 핀 상태 2) 모듈 검출 3) 한 번 읽기
-    python3 check_wiring.py live     # 실시간 raw + 기준 대비 변화량
+    python3 tools/check_wiring.py          # 1) 핀 상태 2) 모듈 검출 3) 한 번 읽기
+    python3 tools/check_wiring.py live     # 실시간 raw + 기준 대비 변화량
 
 배선을 6개 한 번에 하지 말 것. 모듈 1개 -> 확인 -> 2개 추가 -> 확인 순으로 간다.
 6개 다 꽂고 안 되면 어디가 문제인지 찾는 데 몇 시간 쓴다.
@@ -10,13 +10,16 @@
 live 모드가 라벨 확정용이다. 모서리를 하나씩만 눌러보면 그 채널만 크게 움직인다.
 움직인 채널을 보고 HX_LABELS 순서를 정하면 된다.
 """
+import os
 import sys
 import time
 
 import lgpio
 
-from config import Config
-from hx711_bus import HX711Bus, HX711Timeout
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pi/
+
+from acquisition.config import Config  # noqa: E402
+from sensors.hx711_bus import HX711Bus, HX711Timeout  # noqa: E402
 
 
 def probe_pins(cfg):
@@ -144,7 +147,7 @@ def main():
         else:
             detect(bus)
             read_once(bus, cfg)
-            print("모서리별 라벨을 정하려면:  python3 check_wiring.py live")
+            print("모서리별 라벨을 정하려면:  python3 tools/check_wiring.py live")
     finally:
         bus.close()
 

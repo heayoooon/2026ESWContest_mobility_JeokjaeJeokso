@@ -7,9 +7,9 @@
 물리고, AD0 를 3.3V 로 올린 쪽이 0x69, 비운 쪽이 0x68 이 된다. 버스 하나에
 주소가 둘뿐이라 MPU-6050 은 버스당 최대 2개다.
 
-물리 단위가 필요하면(log_xlsx.py) to_units() 로 바꾼다. pi/imu/imu_calibrate.py 가 만든
-imu_cal.json 이 있으면 그 바이어스를 빼고, 장착 자세의 up 축이 +Z 가 되도록 축을 돌린다.
-규칙은 pi/imu/mpu6050_lib.py 와 같다.
+물리 단위가 필요하면(log_xlsx.py) to_units() 로 바꾼다. calibration/imu_calibrate.py 가 만든
+calibration/imu_cal.json 이 있으면 그 바이어스를 빼고, 장착 자세의 up 축이 +Z 가 되도록
+축을 돌린다. ESP32 로 받는 센서(mpu6050_udp.py)도 같은 규칙을 쓴다.
 """
 import json
 import math
@@ -34,6 +34,10 @@ GYR_SCALE = 131.0     # LSB per deg/s  (+-250 dps)
 TEMP_SCALE = 340.0    # degC = raw/340 + 36.53
 TEMP_OFFSET = 36.53
 WHO_OK = (0x68, 0x70, 0x71, 0x72, 0x73, 0x69)   # MPU6050/6500/9250 계열
+
+BUSES = (1, 3, 4, 5, 6)     # find_all() 이 뒤지는 I2C 버스. 하드웨어 I2C 는 1 (GPIO2/3)
+CAL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "calibration", "imu_cal.json")
 
 # imu_cal.json 의 up 축을 +Z 로 가져오는 회전. (x, y, z) -> (x', y', z')
 REMAP = {
@@ -101,20 +105,42 @@ def cal_key(bus, addr):
 
 
 def find_cal(path=""):
-    """imu_cal.json 경로. path 를 안 주면 이 폴더 -> ../imu -> ~/imu 순으로 찾는다."""
-    here = os.path.dirname(os.path.abspath(__file__))
-    cands = [path] if path else [os.path.join(here, "imu_cal.json"),
-                                 os.path.join(here, "..", "imu", "imu_cal.json"),
-                                 os.path.expanduser("~/imu/imu_cal.json")]
-    for p in cands:
-        if os.path.isfile(p):
-            return os.path.abspath(p)
-    return None
+    """imu_cal.json 경로. path 를 안 주면 calibration/imu_cal.json. 파일이 없으면 None."""
+    p = path or CAL_PATH
+    return os.path.abspath(p) if os.path.isfile(p) else None
 
 
 def load_cal(path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def detect_up(ax, ay, az):
+    """중력이 실린 칩 축 (성분 절댓값이 가장 큰 축). 예) "+z" 칩이 위, "+x" 모듈이 세워짐."""
+    comps = {"x": ax, "y": ay, "z": az}
+    axis = max(comps, key=lambda k: abs(comps[k]))
+    return ("+" if comps[axis] >= 0 else "-") + axis
+
+
+def find_all():
+    """WHO_AM_I 에 응답하는 MPU-6050 전부 [(bus, addr), ...]."""
+    if SMBus is None:
+        raise RuntimeError("smbus2 가 없다. pip install smbus2")
+    found = []
+    for bus in BUSES:
+        if not os.path.exists("/dev/i2c-%d" % bus):
+            continue
+        try:
+            with SMBus(bus) as b:
+                for a in (0x68, 0x69):
+                    try:
+                        if b.read_byte_data(a, WHO_AM_I) in WHO_OK:
+                            found.append((bus, a))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return found
 
 
 def to_units(raw, cal=None):

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""바닥 로드셀(하중) + 벨트 장력 + IMU + 문 센서를 한 시계로 읽어 **시간순 엑셀** 로 남긴다.
+"""바닥 로드셀(하중) + 벨트 장력 + IMU 를 한 시계로 읽어 **시간순 엑셀** 로 남긴다.
 
-    python3 log_xlsx.py                      # 파이. Ctrl+C 까지
-    LOG_SECONDS=60 python3 log_xlsx.py       # 60초
-    python log_xlsx.py --sim                 # PC(VS Code). 파이 없이 가짜 센서로
+    python3 acquisition/log_xlsx.py                      # 파이. Ctrl+C 까지
+    LOG_SECONDS=60 python3 acquisition/log_xlsx.py       # 60초
+    python acquisition/log_xlsx.py --sim                 # PC(VS Code). 파이 없이 가짜 센서로
 
-핀/라벨/역할은 전부 환경변수다 (config.py). 예) 바닥 4모서리 + 벨트 2개 + 문 센서
-    HX_DT=5,6,13,19,26,20 HX_LABELS=FL,FR,RL,RR,T1,T2 DOOR_PIN=23 python3 log_xlsx.py
+핀/라벨/역할은 전부 환경변수다 (config.py). 예) 바닥 4모서리 + 벨트 2개
+    HX_DT=5,6,13,19,26,20 HX_LABELS=FL,FR,RL,RR,T1,T2 python3 acquisition/log_xlsx.py
 
 한 행 = HX711 샘플 한 번 (RATE 10SPS 면 약 10Hz). HX711 변환을 기다리는 동안 IMU 를
-IMU_HZ 로 읽어 두었다가 그 구간 평균을 같은 행에 붙인다. 문 센서는 행마다 한 번 읽는다.
+IMU_HZ 로 읽어 두었다가 그 구간 평균을 같은 행에 붙인다.
 무게(g)/장력(N) 열은 calib.json 에 보정값이 있는 채널만 나온다 (calibrate.py 참고).
 시작할 때 DT 가 안 떨어지는 모듈은 빼고 기록한다 (화면 경고 + 요약 시트에 남긴다).
 
@@ -28,13 +28,15 @@ import time
 import types
 import unicodedata
 
-from config import Config
-from hx711_bus import HX711Timeout
-from mpu6050 import cal_key, find_cal, load_cal, tilt, to_units
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pi/
+
+from acquisition.config import Config  # noqa: E402
+from sensors.hx711_bus import HX711Timeout  # noqa: E402
+from sensors.mpu6050 import cal_key, find_cal, load_cal, tilt, to_units  # noqa: E402
 
 G_TO_N = 9.80665 / 1000     # 질량(g) -> 힘(N)
 COG_MIN_G = 100             # 총하중이 이보다 작으면 무게중심은 노이즈뿐이라 비운다
-ALPHA = 0.98                # 기울기 상보필터 (pi/imu/imu_angle.py 와 같은 값)
+ALPHA = 0.98                # 기울기 상보필터 (tools/imu_angle.py 와 같은 값)
 STATUS_EVERY = 0.5          # 화면 갱신(초)
 FLUSH_EVERY = 1.0           # CSV 를 디스크까지 내리는 주기(초)
 EXCEL_MAX_ROWS = 1048576    # 엑셀 시트 하나의 행 한계
@@ -167,7 +169,7 @@ class ImuSet:
 class Table:
     """채널 역할(하중/장력)과 보정 여부로 열을 정하고, 샘플 하나를 한 행으로 바꾼다."""
 
-    def __init__(self, cfg, labels, cal, imu_labels, has_door):
+    def __init__(self, cfg, labels, cal, imu_labels):
         weight, tension, corners = cfg.roles(labels)
         self.labels = labels
         self.cal = cal                          # {라벨: (offset, g/count)}
@@ -180,7 +182,6 @@ class Table:
         else:
             self.bed, unit, self.cog_unit = (100.0, 100.0), "pct", "%"
         self.imu_labels = imu_labels
-        self.door = has_door
 
         cols = ["time", "t_s"]
         cols += ["%s_g" % l for l in self.wg]
@@ -191,13 +192,11 @@ class Table:
         cols += ["%s_N" % l for l in self.tn]
         for l in imu_labels:
             cols += ["%s_%s" % (l, k) for k in ImuSet.FIELDS]
-        if has_door:
-            cols.append("door_open")
         cols += ["%s_raw" % l for l in labels]
         cols.append("flags")
         self.cols = cols
 
-    def row(self, wall, t_rel, s, imu, door_open):
+    def row(self, wall, t_rel, s, imu):
         """(CSV 한 행, 화면에 띄울 요약)"""
         raw = dict(zip(self.labels, s.values))
         g = {l: (raw[l] - off) * sc for l, (off, sc) in self.cal.items() if l in raw}
@@ -231,8 +230,6 @@ class Table:
                 flags.append("imu_miss:" + l)
             else:
                 out += v
-        if self.door:
-            out.append(door_open)
         out += s.values
         out.append("|".join(flags))
 
@@ -247,8 +244,6 @@ class Table:
         if self.imu_labels and imu.get(self.imu_labels[0]):
             v = imu[self.imu_labels[0]]
             show.append("%s ax%+.2f ay%+.2f" % (self.imu_labels[0], v[0], v[1]))
-        if self.door:
-            show.append("문 열림" if door_open else "문 닫힘")
         return out, "  ".join(show)
 
 
@@ -257,7 +252,7 @@ class Table:
 # --------------------------------------------------------------------------
 def open_hx(cfg, keep=None):
     """HX711Bus 를 연다. keep 을 주면 그 인덱스의 모듈만."""
-    from hx711_bus import HX711Bus
+    from sensors.hx711_bus import HX711Bus
     idx = list(range(len(cfg.hx_dt))) if keep is None else keep
     sck = cfg.hx_sck[0] if cfg.hx_shared_sck else [cfg.hx_sck[i] for i in idx]
     return HX711Bus(sck, [cfg.hx_dt[i] for i in idx], [cfg.hx_labels[i] for i in idx],
@@ -266,13 +261,13 @@ def open_hx(cfg, keep=None):
 
 
 def open_real(cfg, notes):
-    from calibrate import CALIB_PATH, load_calib
-    from mpu6050 import MPU6050
+    from calibration.calibrate import CALIB_PATH, load_calib
+    from sensors.mpu6050 import MPU6050
 
     try:
         hx = open_hx(cfg)
     except Exception as e:
-        sys.exit("HX711 열기 실패: %s: %s\nPC 에서 시험하려면: python log_xlsx.py --sim"
+        sys.exit("HX711 열기 실패: %s: %s\nPC 에서 시험하려면: python acquisition/log_xlsx.py --sim"
                  % (type(e).__name__, e))
     hx.sync_reset()                             # 전 모듈 변환 위상 정렬
     missing = hx.missing()
@@ -280,7 +275,7 @@ def open_real(cfg, notes):
         if len(missing) == hx.n:
             hx.close()
             sys.exit("HX711 이 하나도 안 보인다 (DT 가 계속 HIGH). "
-                     "전원/배선부터 확인: python3 check_wiring.py")
+                     "전원/배선부터 확인: python3 tools/check_wiring.py")
         say("! 안 보이는 모듈 %s -> 빼고 기록한다 (DT 가 계속 HIGH)" % ", ".join(missing))
         notes.append("시작할 때 안 보여서 뺀 채널: %s" % ", ".join(missing))
         keep = [i for i, l in enumerate(cfg.hx_labels) if l not in missing]
@@ -307,18 +302,9 @@ def open_real(cfg, notes):
         say("  i2cdetect -y %d 로 68/69 가 보이는지. 진단 스크립트를 돌린 뒤라면 "
             "pinctrl set 2 a3 pu; pinctrl set 3 a3 pu 로 I2C 핀을 되돌린다" % cfg.imu_bus)
 
-    door = None
-    if cfg.door_pin is not None:
-        from door import Door
-        try:
-            door = Door(cfg.door_pin, cfg.door_invert, cfg.hx_chip)
-        except Exception as e:
-            say("! 문 센서 GPIO%d 못 엶: %s" % (cfg.door_pin, e))
-            notes.append("문 센서 GPIO%d 못 엶: %s" % (cfg.door_pin, e))
-
     calib = load_calib()
     return types.SimpleNamespace(
-        hx=hx, imus=imus, door=door, calib=calib,
+        hx=hx, imus=imus, calib=calib,
         calib_src=("%s (%s)" % (CALIB_PATH, calib.get("updated", "?"))
                    if os.path.exists(CALIB_PATH) else "없음"),
         imu_cal_src=cal_path or ("IMU_CAL=%s 파일 없음" % cfg.imu_cal if cfg.imu_cal
@@ -326,12 +312,12 @@ def open_real(cfg, notes):
 
 
 def open_sim(cfg):
-    import sim
+    from sensors import sim
     scn = sim.Scenario()
     hx = sim.SimHX711Bus(cfg, scn)
     imus = [(l, sim.SimMPU6050(l, scn, i), None) for i, l in enumerate(cfg.imu_labels)]
     return types.SimpleNamespace(
-        hx=hx, imus=imus, door=sim.SimDoor(scn), calib=hx.calib(),
+        hx=hx, imus=imus, calib=hx.calib(),
         calib_src="시뮬레이션 내장값", imu_cal_src="시뮬레이션 (평평하게 놓임)")
 
 
@@ -361,13 +347,12 @@ def channel_info(cfg, labels, calib, is_sim):
 # --------------------------------------------------------------------------
 UNIT = {"g": "g", "N": "N", "G": "G", "dps": "°/s", "deg": "°", "mm": "mm", "pct": "%"}
 FILL = {"time": "E7E6E6", "load": "DDEBF7", "tension": "FCE4D6",
-        "imu": "E2EFDA", "door": "FFF2CC", "diag": "EDEDED"}
+        "imu": "E2EFDA", "diag": "EDEDED"}
 
 
 def pretty(col):
     """CSV 열 이름 -> 엑셀 머리글."""
-    fixed = {"time": "시각", "t_s": "경과(초)", "total_g": "총하중(g)",
-             "door_open": "문 열림(1=열림)", "flags": "flags"}
+    fixed = {"time": "시각", "t_s": "경과(초)", "total_g": "총하중(g)", "flags": "flags"}
     if col in fixed:
         return fixed[col]
     name, _, unit = col.rpartition("_")
@@ -390,8 +375,6 @@ def group(col):
         return "diag"
     if col.endswith("_N"):
         return "tension"
-    if col == "door_open":
-        return "door"
     if col.endswith(("_G", "_dps", "_deg")):
         return "imu"
     return "load"
@@ -559,7 +542,7 @@ def main():
     say(hx.describe())
     flipped = []
     if not is_sim:
-        from calibrate import stale
+        from calibration.calibrate import stale
         flipped = stale(dev.calib, cfg, hx.labels)
     if flipped:
         say("! HX_INVERT 가 영점 잡을 때와 다른 채널 %s -> raw 만 적는다. calibrate.py tare 부터 다시"
@@ -580,8 +563,7 @@ def main():
         notes.append("보정값이 없어 raw 만 적은 채널: %s" % ", ".join(miss))
 
     imus = ImuSet(dev.imus, cfg.imu_hz)
-    door = dev.door
-    table = Table(cfg, hx.labels, cal, imus.labels, door is not None)
+    table = Table(cfg, hx.labels, cal, imus.labels)
     for l, _, c in dev.imus:
         say("IMU   %s 열림  보정 %s" % (l, ("있음 (up %s)" % c.get("up", "+z")) if c else "없음"))
     if not is_sim:
@@ -638,8 +620,7 @@ def main():
                     continue
 
                 t_rel = (s.t_ns - t0_mono) / 1e9
-                row, shown = table.row(t0_wall + t_rel, t_rel, s, imus.take(),
-                                       door.is_open() if door else None)
+                row, shown = table.row(t0_wall + t_rel, t_rel, s, imus.take())
                 w.writerow(row)
                 rows += 1
                 if row[-1]:
@@ -663,8 +644,6 @@ def main():
         finally:
             hx.close()
             imus.close()
-            if door:
-                door.close()
 
     say("\n\n정리 중...")
     if not rows:
@@ -689,7 +668,6 @@ def main():
     for l, _, c in dev.imus:
         addr = cfg.imu_addrs[cfg.imu_labels.index(l)]
         info.append(("  " + l, "%s · %s" % (hex(addr), ("up %s" % c.get("up", "+z")) if c else "보정 없음")))
-    info.append(("문 센서", door.describe() + ", 1 = 열림" if door else "없음"))
 
     if has_xlsx:
         say("엑셀 만드는 중... (%d행)" % rows)
