@@ -36,7 +36,7 @@ CoG 가 둘 다 맞는다. 배율이 음수로 나오면 그 셀은 부호가 �
 그 셀 변화량만으로 배율을 잡으면 틀린다. `cell` 은 장력 셀용이다.
 
 HX_TENSION 에 든 장력 채널(기본 T1,T2)은 `span`/`multi` 에서 빠지므로 `cell` 로 따로
-잡는다. 장력도 g 로 보정해 두고 log_xlsx.py 가 N 으로 바꿔 적는다.
+잡는다. 장력도 g 로 보정해 두고 acquisition/source.py 가 N 으로 바꾼다.
 """
 import json
 import os

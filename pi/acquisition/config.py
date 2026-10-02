@@ -18,7 +18,7 @@ HX711
                드라이버가 부호를 뒤집는다 (A+/A- 를 바꿔 꽂은 것과 같다).
                바꾸면 calibrate.py tare 부터 다시           기본 없음
 
-채널 역할 / 무게중심 (log_xlsx.py, calibrate.py)
+채널 역할 / 무게중심 (pipeline.py, calibrate.py)
   HX_TENSION   HX_LABELS 중 벨트 장력(인장형) 셀.
                나머지는 전부 바닥 하중 셀로 본다        기본 T1,T2
   COG_CORNERS  무게중심 계산에 쓸 바닥 셀 4개,

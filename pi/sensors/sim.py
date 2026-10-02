@@ -1,6 +1,6 @@
-"""PC(VS Code)에서 파이 없이 log_xlsx.py 를 돌려보기 위한 가짜 센서.
+"""PC(VS Code)에서 파이 없이 파이프라인을 돌려보기 위한 가짜 센서.
 
-    python acquisition/log_xlsx.py --sim      (pi/ 에서)
+    python pipeline.py --sim      (pi/ 에서)
 
 HX711Bus / MPU6050 과 같은 메서드를 흉내 낸다. 값은 아래 시나리오로 만든다.
 
