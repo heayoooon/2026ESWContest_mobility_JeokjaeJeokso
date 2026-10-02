@@ -1,0 +1,8 @@
+{
+  "2.5D heightmap 424x240 -> 1cm grid": 5.691362499874231,
+  "2.5D heightmap 848x480 -> 1cm grid": 11.150590499710233,
+  "3D deproject 848x480 (points only)": 7.030488999589579,
+  "3D voxel downsample 1cm": 103.68724799991469,
+  "3D TSDF integrate 2cm (1.2M voxels)": 33.32796899985624,
+  "3D TSDF integrate 1cm (9.2M voxels)": 292.0719209996605
+}
