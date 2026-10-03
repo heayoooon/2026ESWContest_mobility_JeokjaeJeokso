@@ -136,13 +136,16 @@ class XlsxSink:
                 "%g x %g mm" % (cfg.bed_l, cfg.bed_w) if cfg.bed_l
                 else "% (50 = 가운데, BED_L/BED_W 를 주면 mm)")))
         info.append(("IMU 보정", src.imu_cal_src))
-        for l, addr in zip(cfg.imu_labels, cfg.imu_addrs):
+        where = [(l, hex(a)) for l, a in zip(cfg.imu_i2c_labels, cfg.imu_addrs)]
+        if cfg.imu_udp_port:
+            where.append((cfg.imu_udp_label, "ESP32 UDP %d" % cfg.imu_udp_port))
+        for l, loc in where:
             if l not in src.imu_cal:
                 desc = "못 엶 (빈칸)"
             else:
                 ic = src.imu_cal[l]
                 desc = ("up %s" % ic.get("up", "+z")) if ic else "보정 없음"
-            info.append(("  " + l, "%s · %s" % (hex(addr), desc)))
+            info.append(("  " + l, "%s · %s" % (loc, desc)))
 
         if self.has_xlsx:
             say("엑셀 만드는 중... (%d행)" % self.rows)
@@ -242,9 +245,11 @@ class Stat:
         return (self.m2 / self.n) ** 0.5 if self.n > 1 else 0.0
 
 
-def build_xlsx(csv_path, xlsx_path, info=(), notes=()):
+def build_xlsx(csv_path, xlsx_path, info=(), notes=(), style=None, extra=None):
     """CSV -> 엑셀 (측정 + 요약 시트). 길게 기록해도 메모리를 안 먹게 write-only 로
     한 줄씩 흘려 쓴다. 기록 도중 죽어서 CSV 만 남았을 때도 이 함수로 다시 만들 수 있다.
+    style 은 CSV 열 이름 -> (머리글, 머리글 색). 비우면 센서 엑셀 열 (카메라 엑셀은 log_camera.py).
+    extra(wb, head_cell) 는 요약 시트 뒤에 시트를 더 붙인다 (카메라 엑셀의 트윈 기준 · 높이맵).
     돌려주는 값은 엑셀에 적은 행 수."""
     from openpyxl import Workbook
     from openpyxl.cell import WriteOnlyCell
@@ -252,6 +257,7 @@ def build_xlsx(csv_path, xlsx_path, info=(), notes=()):
     from openpyxl.utils import get_column_letter
 
     notes = list(notes)
+    style = style or (lambda h: (pretty(h), FILL[group(h)]))
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("측정")
 
@@ -267,9 +273,9 @@ def build_xlsx(csv_path, xlsx_path, info=(), notes=()):
         head = next(rd)
         for i, h in enumerate(head, 1):
             ws.column_dimensions[get_column_letter(i)].width = \
-                24 if h == "time" else max(9, text_width(pretty(h)) + 2)
+                24 if h == "time" else max(9, text_width(style(h)[0]) + 2)
         ws.freeze_panes = "C2"                  # 머리글 줄과 시각 열 고정
-        ws.append([head_cell(ws, pretty(h), FILL[group(h)]) for h in head])
+        ws.append([head_cell(ws, *style(h)) for h in head])
 
         stats = [Stat() for _ in head]
         first = last = None
@@ -337,10 +343,12 @@ def build_xlsx(csv_path, xlsx_path, info=(), notes=()):
     s.append([head_cell(s, t) for t in
               ("항목", "평균", "최소", "최대", "표준편차", "처음", "마지막", "개수")])
     for h, st in zip(head, stats):
-        if h in ("time", "t_s") or st.n == 0:
+        if h in ("time", "t_s", "seq", "frame_ts") or st.n == 0:
             continue
-        s.append([pretty(h), round(st.mean, 4), st.min, st.max, round(st.sd, 4),
+        s.append([style(h)[0], round(st.mean, 4), st.min, st.max, round(st.sd, 4),
                   st.first, st.last, st.n])
 
+    if extra:
+        extra(wb, head_cell)
     wb.save(xlsx_path)
     return n

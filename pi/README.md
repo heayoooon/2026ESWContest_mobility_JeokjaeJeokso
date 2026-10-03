@@ -11,7 +11,14 @@
 sensors/ ──▶ acquisition/source.py ──Frame──▶ analysis/analyzer.py ──Result──▶ acquisition/log_xlsx.py
  드라이버       FrameSource.frames()   (~10Hz)   Analyzer(cfg)(frame)              CSV / 엑셀
                                                  (cog.py: 총하중 · 무게중심)       sink.write(frame, result)
+
+twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로세스) ──▶ <이름>_camera 엑셀
+ D435i 높이맵 + 요약 (~15-30fps)  패킷 하나 = 한 행. 경과(초) 0 이 센서 엑셀과 같다
+      └──▶ <시각>_d435i.db3  컬러 + depth 원본 녹화 (카메라 엑셀의 카메라 프레임 시각(ms) 으로 맞춘다)
 ```
+
+카메라는 `Frame` 에 넣지 않고 **엑셀을 따로** 만든다. `pipeline.py` 가 도는 동안 트윈 노드 패킷이 오면
+끝날 때 `<이름>.xlsx` 옆에 `<이름>_camera.xlsx` 가 생긴다. 안 오면 안 생긴다 (`CAM_PORT`, 기본 UDP 5006).
 
 | `Frame` 필드 | 내용 |
 |---|---|
@@ -85,6 +92,9 @@ python3 calibration/imu_calibrate.py --only bus1:0x68    # 한 센서만
 - `calibration/imu_cal.json` 에 바이어스(ax..gz)와 up 축이 저장되고, 읽을 때 축을 돌려 rest pose 기준 roll/pitch 를 낸다.
 - 진짜 수평계처럼 쓰려면 정말 수평인 면에서 보정한다. 브레드보드 위에서 보정하면 그 자세가 0도.
 - ESP32 센서는 자동 보정이 안 된다. `imu_cal.json` 에 `"esp32:0x68"` 키로 직접 넣는다.
+- `pipeline.py` 는 파이 I2C 센서(`IMU_ADDRS`, 기본 `0x68` = imu1)와 ESP32 무선 센서(`IMU_UDP_PORT`, 기본 UDP 5005 = imu2)를
+  함께 읽는다. ESP32 펌웨어의 `PI_PORT` 를 이 포트에 맞추고, 카메라(`CAM_PORT` 5006)와 겹치지 않게 한다.
+  패킷이 안 오면 imu2 열은 빈칸이고 행마다 `imu_miss:imu2` 가 flags 에 남는다.
 - 두 칩 구별: 자이로 바이어스 지문 (한쪽 gx ≈ -1430, 다른 쪽 ≈ -215).
 
 ### 확인 · 진단 (`tools/`)
@@ -108,19 +118,32 @@ python3 tools/i2c_bitbang_scan.py      # GPIO2/3 을 소프트웨어 I2C 로 직
 
 | 파일 | 내용 |
 |---|---|
-| `twin_core.py` | 순수 numpy 코어 (pyrealsense2 불필요). `world_rotation`, `deproject`, `HeightMapper`(2.5D), `voxel_downsample`, `TSDF`(3D, 비교용) |
-| `pi_twin_node.py` | depth 848x480@30 → 필터 → 2cm 격자 높이맵(int16 mm) → UDP 5005 송신 |
+| `twin_core.py` | 순수 numpy 코어 (pyrealsense2 불필요). `world_rotation`, `deproject`, `HeightMapper`(2.5D), `summarize`(높이맵 요약), `voxel_downsample`, `TSDF`(3D, 비교용) |
+| `pi_twin_node.py` | depth 848x480@30 → 필터 → 2cm 격자 높이맵(int16 mm) → UDP 5006 송신 (받는 곳 여러 개 가능). 컬러 + depth 원본은 `.db3` 로 녹화 |
 | `twin_receiver.py` | 수신 예제. 패킷을 높이맵 numpy 배열 + 헤더로 복원 |
 | `bench.py` | `out/` 의 저장 프레임으로 2.5D vs 3D 처리 시간 측정 → `out/bench_<arch>.json` |
 | `pi_install_pyrealsense2.sh` | 소스 빌드한 librealsense(v2.58.4, RSUSB)를 `~/d435i/.venv` 에 설치 |
 
 ```bash
 python3 twin/pi_twin_node.py 192.168.0.10 60   # 파이 -> PC 로 60초 송신 (기본 127.0.0.1, 무한)
+python3 twin/pi_twin_node.py 127.0.0.1,192.168.0.10   # 같은 패킷을 여러 곳에 (이 파이의 pipeline.py + PC)
 python3 twin/twin_receiver.py                  # PC/디스플레이 쪽
 python3 twin/bench.py                          # 처리 비용 (PC 에서도 됨)
 ```
 
 - 시작할 때 1회: 카메라 내장 IMU 로 수평 보정, 첫 프레임에서 격자 범위와 바닥 기준면을 정한다. 설치 후 카메라를 움직이면 다시 시작.
-- 패킷 = `[4B 헤더길이][JSON 헤더][zlib(int16 높이맵)]`. 헤더: `seq, t, frame_ts, grid, imu(accel, tilt_change_deg), sensors`
+- 패킷 = `[4B 헤더길이][JSON 헤더][zlib(int16 높이맵)]`. 헤더: `seq, t, frame_ts, grid, imu(accel, tilt_change_deg), stats, sensors, calib`
+- `calib` = 설치 보정값 (`ref_h, R, accel0, intr, depth_scale, max_range, stream, filters, camera`). 매 패킷 같은 값이라
+  아무 패킷 하나로도 높이맵을 월드 3D 로 다시 세울 수 있다. `pipeline.py` 가 카메라 엑셀 `트윈 기준` 시트에 적는다.
+- `stats` = `summarize()` 결과: `valid_pct, max_mm, mean_mm, area_m2, volume_l, cx_m, cy_m, occ_mm`. 기준면보다
+  `occ_mm`(20 mm) 넘게 높은 칸을 화물로 보고 면적 · 부피 · 부피중심(높이 가중)을 낸다. `pipeline.py` 가 이걸 카메라 엑셀에 적는다.
+- 녹화: 컬러(rgb8) + depth(z16) 848x480@30 원본과 카메라 IMU 를 `<시각>_d435i.db3` 한 파일로 남긴다 (기본 `acquisition/logs/`,
+  `BAG_DIR` 로 바꾸고 `BAG=0` 이면 안 함). librealsense 2.58 은 ROS1 `.bag` 대신 ROS2 rosbag2(`.db3`)로만 녹화한다.
+  비압축(약 61 MB/s)은 파이 SD 카드(실측 약 36 MB/s)가 못 따라가 프레임이 빠져서 무손실 압축으로 녹화한다
+  (실측 약 25 MB/s, 30fps 빠짐 없음, 재생 프레임이 녹화 중 프레임과 바이트 단위로 같음). 1분에 약 1.5 GB.
+  realsense-viewer 나 pyrealsense2 `cfg.enable_device_from_file()` 로 다시 돌린다.
+- 트윈 노드 포트는 기본 5006 (`pipeline.py` 의 `CAM_PORT`). 5005 는 ESP32 IMU 라서 거기로 보내면 IMU 수신기가
+  조용히 버리고 카메라 엑셀이 안 생긴다. 같은 장비면 `pi_twin_node.py 127.0.0.1`, 카메라가 다른 노드에 있으면
+  `<파이 주소>` 만 주면 된다. PC 시각화(`twin_receiver.py`)도 5006 으로 받는다 (그래서 `pipeline.py` 와 같은 장비에선 같이 못 돈다).
 - `sensors` 는 아직 자리표시자 (`read_other_sensors()` 가 `None` 을 돌려준다). 로드셀 값과 묶는 방식과 송신 시점은 미정.
 - 현재는 매 프레임 송신한다. 파이(aarch64) 기준 2.5D 높이맵 424x240 → 1cm 격자가 약 6 ms (`out/bench_aarch64.json`).

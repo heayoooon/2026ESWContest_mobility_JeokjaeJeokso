@@ -8,6 +8,7 @@
     acquisition/source.py     센서 -> Frame (약 10Hz, acquisition/frame.py)
     analysis/analyzer.py      Frame -> Result (총하중, 무게중심. analysis/cog.py)
     acquisition/log_xlsx.py   Frame + Result -> CSV / 엑셀
+    acquisition/log_camera.py 트윈 노드(D435i) UDP 패킷 -> <이름>_camera 엑셀 (따로, 별도 프로세스)
 
 핀/라벨/역할은 전부 환경변수다 (acquisition/config.py). 예) 바닥 4모서리 + 벨트 2개
     HX_DT=5,6,13,19,26,20 HX_LABELS=FL,FR,RL,RR,T1,T2 python3 pipeline.py
@@ -19,6 +20,7 @@ import time
 
 from acquisition.config import Config
 from acquisition.console import say, status
+from acquisition.log_camera import CameraLog
 from acquisition.log_xlsx import XlsxSink
 from acquisition.source import FrameSource
 from analysis.analyzer import Analyzer
@@ -26,7 +28,7 @@ from analysis.analyzer import Analyzer
 STATUS_EVERY = 0.5          # 화면 갱신(초)
 
 
-def status_text(frame, result):
+def status_text(frame, result, cam_rows):
     show = []
     if result.total_g is not None:
         show.append("하중 %.0fg" % result.total_g)
@@ -37,10 +39,10 @@ def status_text(frame, result):
     show += ["%s %.1fN" % (l, v) for l, v in tension.items()]
     if result.total_g is None and not tension:  # 보정이 없으면 raw 라도
         show += ["%s=%d" % (l, v) for l, v in frame.raw.items() if v is not None]
-    for l, r in frame.imu.items():
-        if r:
-            show.append("%s ax%+.2f ay%+.2f" % (l, r.ax, r.ay))
-            break
+    for l, r in frame.imu.items():              # 이번 구간에 못 읽은 IMU 는 - 로
+        show.append("%s ax%+.2f ay%+.2f" % (l, r.ax, r.ay) if r else "%s -" % l)
+    if cam_rows:
+        show.append("카메라 %d" % cam_rows)
     return "  ".join(show)
 
 
@@ -63,7 +65,12 @@ def main():
     say(cfg.describe())
     say()
 
+    cam = CameraLog(cfg, os.path.join(cfg.log_dir, name + "_camera.csv"),
+                    os.path.join(cfg.log_dir, name + "_camera.xlsx"), sim=is_sim)
+    cam.start()                                 # 센서보다 먼저 (수신 프로세스가 뜨는 ~1초를 기록 전에)
     src = FrameSource(cfg, sim=is_sim)
+    if is_sim:
+        cam.start_sim(src.hx.scn.t0)            # 가짜 카메라를 가짜 센서와 같은 시각표로
     os.makedirs(cfg.log_dir, exist_ok=True)
     sink = XlsxSink(cfg, os.path.join(cfg.log_dir, name + ".csv"),
                     os.path.join(cfg.log_dir, name + ".xlsx"))
@@ -82,13 +89,15 @@ def main():
 
     try:
         for f in src.frames():
+            if sink.rows == 0:                  # 카메라 행의 경과(초)를 센서 엑셀과 같은 0초에 맞춘다
+                cam.set_t0(src.t0_ns, src.t0_wall)
             r = analyze(f)
             sink.write(f, r)
 
             now = time.monotonic()
             if now - last_status >= STATUS_EVERY:
                 last_status = now
-                status("%6.1fs %6d행  %s%s" % (f.t_s, sink.rows, status_text(f, r),
+                status("%6.1fs %6d행  %s%s" % (f.t_s, sink.rows, status_text(f, r, cam.rows),
                                                "  타임아웃 %d" % src.timeouts if src.timeouts else ""))
             if limit_ns and time.monotonic_ns() - src.t0_ns >= limit_ns:
                 break
@@ -99,7 +108,8 @@ def main():
         src.close()
 
     say("\n\n정리 중...")
-    return 0 if sink.close(src, notes + src.notes + run_notes) else 1
+    cam_notes = cam.close()
+    return 0 if sink.close(src, notes + src.notes + run_notes + cam_notes) else 1
 
 
 if __name__ == "__main__":

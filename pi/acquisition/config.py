@@ -28,14 +28,23 @@ HX711
 
 MPU-6050
   IMU_BUS      I2C 버스 번호                             기본 1
-  IMU_ADDRS    주소, 쉼표 구분                           기본 0x68,0x69
-  IMU_LABELS   주소 순서대로 붙일 이름                   기본 imu1,imu2
+  IMU_ADDRS    파이에 직접 물린 센서 주소, 쉼표 구분     기본 0x68
+  IMU_LABELS   주소 순서대로 붙일 이름                   기본 imu1
+  IMU_UDP_PORT ESP32 무선 센서를 받을 UDP 포트 (펌웨어 PI_PORT 와 맞출 것).
+               0 이면 안 받는다. CAM_PORT 와 달라야 한다   기본 5005
+  IMU_UDP_LABEL ESP32 센서 이름 (CSV 열 imu2_*)          기본 imu2
+  IMU_UDP_ADDR  ESP32 센서의 MPU 주소 (보정 키 esp32:<주소>) 기본 0x68
   IMU_HZ       목표 샘플레이트                           기본 100
   IMU_CAL      imu_cal.json 경로 (calibration/imu_calibrate.py 결과).
                비우면 calibration/imu_cal.json
 
+카메라 (D435i 트윈 노드 twin/pi_twin_node.py 가 보내는 UDP 패킷, pipeline.py)
+  CAM_PORT     받을 UDP 포트. 패킷이 오면 <LOG_NAME>_camera.xlsx 를
+               센서 엑셀과 같이 만든다. 0 이면 안 받는다   기본 5006
+               (컬러 · depth 원본은 트윈 노드가 .db3 로 녹화한다. twin/pi_twin_node.py 머리말)
+
 로그
-  LOG_DIR      로그가 쌓일 상위 폴더                     기본 ./logs
+  LOG_DIR     로그가 쌓일 상위 폴더                     기본 ./logs
   LOG_SECONDS  기록 길이(초). 0 이면 Ctrl+C 까지         기본 0
   LOG_NAME     이번 런 이름(폴더/파일 이름). 비우면 시각으로 자동
 
@@ -96,11 +105,19 @@ class Config:
 
         # --- MPU-6050 ----------------------------------------------------
         self.imu_bus = _int("IMU_BUS", 1)
-        self.imu_addrs = _int_list("IMU_ADDRS", "0x68,0x69")
+        self.imu_addrs = _int_list("IMU_ADDRS", "0x68")
         m = len(self.imu_addrs)
-        self.imu_labels = _str_list("IMU_LABELS", ",".join("imu%d" % (i + 1) for i in range(m)))
+        self.imu_i2c_labels = _str_list("IMU_LABELS", ",".join("imu%d" % (i + 1) for i in range(m)))
+        self.imu_udp_port = _int("IMU_UDP_PORT", 5005)
+        self.imu_udp_label = _str("IMU_UDP_LABEL", "imu%d" % (m + 1))
+        self.imu_udp_addr = _int("IMU_UDP_ADDR", 0x68)
+        # 프레임/엑셀 열에 쓰는 전체 IMU 라벨: 파이에 직접 물린 것 + ESP32 무선
+        self.imu_labels = self.imu_i2c_labels + ([self.imu_udp_label] if self.imu_udp_port else [])
         self.imu_hz = _int("IMU_HZ", 100)
         self.imu_cal = _str("IMU_CAL", "")
+
+        # --- 카메라 ------------------------------------------------------
+        self.cam_port = _int("CAM_PORT", 5006)
 
         # --- 로그 --------------------------------------------------------
         self.log_dir = _str("LOG_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
@@ -134,14 +151,22 @@ class Config:
             raise SystemExit("HX_GAIN 은 128/64/32 중 하나")
         if self.hx_pull not in ("up", "down", "none"):
             raise SystemExit("HX_PULL 은 up/down/none 중 하나")
-        if len(self.imu_labels) != len(self.imu_addrs):
-            raise SystemExit("IMU_LABELS %d개 != IMU_ADDRS %d개" % (len(self.imu_labels), len(self.imu_addrs)))
+        if len(self.imu_i2c_labels) != len(self.imu_addrs):
+            raise SystemExit("IMU_LABELS %d개 != IMU_ADDRS %d개" % (len(self.imu_i2c_labels), len(self.imu_addrs)))
+        if len(set(self.imu_labels)) != len(self.imu_labels):
+            raise SystemExit("IMU 라벨이 겹친다: %r (IMU_LABELS / IMU_UDP_LABEL)" % (self.imu_labels,))
+        if not 0 <= self.imu_udp_port <= 65535:
+            raise SystemExit("IMU_UDP_PORT 는 0(안 받음) 또는 1~65535")
+        if self.imu_udp_port and self.imu_udp_port == self.cam_port:
+            raise SystemExit("IMU_UDP_PORT 와 CAM_PORT 가 같다 (%d). 하나를 바꿔라" % self.cam_port)
         if len(self.cog_corners) != 4 or len(set(self.cog_corners)) != 4:
             raise SystemExit("COG_CORNERS 는 서로 다른 라벨 4개 (앞왼,앞오,뒤왼,뒤오): %r"
                              % (self.cog_corners,))
         both = set(self.cog_corners) & set(self.hx_tension)
         if both:
             raise SystemExit("COG_CORNERS 와 HX_TENSION 에 같은 라벨: %s" % ", ".join(sorted(both)))
+        if not 0 <= self.cam_port <= 65535:
+            raise SystemExit("CAM_PORT 는 0(안 받음) 또는 1~65535")
         if (self.bed_l is None) != (self.bed_w is None):
             raise SystemExit("BED_L 과 BED_W 는 둘 다 주거나 둘 다 비운다")
         if self.bed_l is not None and (self.bed_l < 0 or self.bed_w < 0):
@@ -168,11 +193,14 @@ class Config:
             "imu": {
                 "bus": self.imu_bus, "addrs": [hex(a) for a in self.imu_addrs],
                 "labels": self.imu_labels, "target_hz": self.imu_hz,
+                "udp": ({"label": self.imu_udp_label, "port": self.imu_udp_port,
+                         "addr": hex(self.imu_udp_addr)} if self.imu_udp_port else None),
             },
             "roles": {
                 "tension": self.hx_tension, "cog_corners": self.cog_corners,
                 "bed_mm": [self.bed_l, self.bed_w] if self.bed_l else None,
             },
+            "cam": {"udp_port": self.cam_port or None},
             "log": {"dir": self.log_dir, "seconds": self.log_seconds, "name": self.log_name},
         }
 
@@ -185,7 +213,9 @@ class Config:
             head = "SCK 모듈별 (동시 토글)"
             pairs = ", ".join("%s=SCK GPIO%d/DT GPIO%d" % (l, s, d)
                               for l, s, d in zip(self.hx_labels, self.hx_sck, self.hx_dt))
-        imus = ", ".join("%s=%s" % (l, hex(a)) for l, a in zip(self.imu_labels, self.imu_addrs))
+        imus = ", ".join("%s=%s" % (l, hex(a)) for l, a in zip(self.imu_i2c_labels, self.imu_addrs))
+        if self.imu_udp_port:
+            imus += (", " if imus else "") + "%s=ESP32 UDP %d" % (self.imu_udp_label, self.imu_udp_port)
         weight, tension, corners = self.roles()
         if corners:
             cog = "무게중심 %s (%s)" % ("/".join(corners), "%gx%gmm" % (self.bed_l, self.bed_w)
@@ -197,10 +227,13 @@ class Config:
             "HX711  %s  %d채널  [%s]  gain=%d pull=%s rate=%dSPS%s\n"
             "역할   하중 [%s]  장력 [%s]  %s\n"
             "IMU    bus%d  [%s]  target=%dHz\n"
+            "CAM    %s\n"
             "LOG    %s/%s  %s"
             % (head, len(self.hx_dt), pairs, self.hx_gain, self.hx_pull, self.hx_rate, inv,
                ",".join(weight), ",".join(tension), cog,
                self.imu_bus, imus, self.imu_hz,
+               ("UDP %d (트윈 노드 패킷 -> pipeline.py 가 _camera 엑셀로)" % self.cam_port
+                if self.cam_port else "안 받음 (CAM_PORT=0)"),
                self.log_dir, self.log_name,
                ("%.0f초" % self.log_seconds) if self.log_seconds else "Ctrl+C 까지")
         )

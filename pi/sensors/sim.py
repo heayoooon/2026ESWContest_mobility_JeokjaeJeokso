@@ -3,6 +3,7 @@
     python pipeline.py --sim      (pi/ 에서)
 
 HX711Bus / MPU6050 과 같은 메서드를 흉내 낸다. 값은 아래 시나리오로 만든다.
+SimCamera 는 D435i 트윈 노드(twin/pi_twin_node.py)의 UDP 패킷을 흉내 낸다 (numpy 필요).
 
     40초 주기   0~6s 정차   6~10s 가속   12~16s 좌회전
                 16~19s 제동   24~29s 우회전   34~38s 감속 정차
@@ -10,9 +11,12 @@ HX711Bus / MPU6050 과 같은 메서드를 흉내 낸다. 값은 아래 시나�
 
 실제 셀이 아니므로 보정값(offset/scale)도 여기서 정한 가짜 값을 쓴다 (calib.json 무시).
 """
+import json
 import math
 import random
+import struct
 import time
+import zlib
 
 from sensors.hx711_bus import HX711Timeout, Sample
 from sensors.mpu6050 import ACC_SCALE, GYR_SCALE, TEMP_OFFSET, TEMP_SCALE
@@ -23,6 +27,10 @@ CARGO_G = 3000.0        # 화물 무게(g)
 G_TO_N = 9.80665 / 1000
 NOISE_COUNTS = 60       # HX711 노이즈 (카운트, 표준편차)
 SCALE = {"load": 0.02, "tension": 0.0047}   # g/count. 바닥 셀 / 인장형 10kg 셀 규모
+CAM_FPS = 15            # 가짜 카메라 프레임 속도
+CAM_CELL = 0.02         # 높이맵 칸(m). pi_twin_node.py 의 CELL 과 같다
+CAM_BED = (0.6, 0.4)    # 높이맵 범위(m). x 왼->오, y 앞->뒤 (시나리오 무게중심 좌표와 같은 방향)
+CARGO_BOX = (0.20, 0.14, 0.15)  # 화물 상자 가로, 세로, 높이(m)
 
 
 def _window(c, a, b, amp, edge=0.8):
@@ -36,8 +44,8 @@ def _window(c, a, b, amp, edge=0.8):
 class Scenario:
     """시각 -> 차량/화물 상태. 모든 가짜 센서가 이걸 같이 본다."""
 
-    def __init__(self):
-        self.t0 = time.monotonic()
+    def __init__(self, t0=None):
+        self.t0 = time.monotonic() if t0 is None else t0    # 다른 프로세스(SimCamera)와 같은 시각표를 쓰려면 t0 를 넘긴다
 
     def at(self):
         t = time.monotonic() - self.t0
@@ -46,14 +54,18 @@ class Scenario:
         ay = _window(c, 12, 16, 0.2) + _window(c, 24, 29, -0.25)
         slipped = t >= SLIP_AT
         tight = min(1.0, t / 3.0)                       # 처음 3초 동안 벨트를 조인다
+        cx = 0.52 + (0.05 if slipped else 0.0)          # 화물이 실제로 놓인 자리 (0~1). 밀리면 앞오른쪽으로
+        cy = 0.47 - (0.12 if slipped else 0.0)
         return {
             "moving": 6 <= c < 38,
             "ax": ax,                                   # 종가속도(G). + = 가속
             "ay": ay,                                   # 횡가속도(G). + = 좌회전
             "yaw": _window(c, 12, 16, 15) + _window(c, 24, 29, -18),    # deg/s
+            "cargo_x": cx,
+            "cargo_y": cy,
             # 무게중심 (0~1). x 왼->오, y 앞->뒤. 가속하면 뒤로, 좌회전하면 오른쪽으로 쏠린다
-            "x": 0.52 + 0.16 * ay + (0.05 if slipped else 0.0),
-            "y": 0.47 + 0.12 * ax - (0.12 if slipped else 0.0),
+            "x": cx + 0.16 * ay,
+            "y": cy + 0.12 * ax,
             # 벨트 장력(N). 관성으로 화물이 벨트를 당기면 오른다
             "t1": 55 * tight - (28 if slipped else 0) + 25 * abs(ax),
             "t2": 60 * tight + 25 * abs(ay),
@@ -156,3 +168,50 @@ class SimMPU6050:
 
     def close(self):
         pass
+
+
+class SimCamera:
+    """twin/pi_twin_node.py 와 같은 모양의 UDP 패킷을 만든다: 판 위 상자 하나를 2.5D 높이맵으로.
+
+    상자는 화물이 실제로 밀릴 때(SLIP_AT)만 움직인다. 가감속 · 선회 중 로드셀 무게중심이 흔들리는 건
+    하중 이동이라 카메라에는 안 보인다. 센서 엑셀과 카메라 엑셀을 나란히 보면 그 차이가 보인다.
+    """
+
+    def __init__(self, scenario):
+        import numpy as np                              # PC 에 numpy 가 없으면 여기서 ImportError
+        from twin.twin_core import summarize, world_rotation
+        self.np, self.summarize = np, summarize
+        acc0 = [0.0, 0.0, -9.81]                        # 기준면 1 m 위에서 똑바로 내려다보는 카메라 (z 앞 = 아래)
+        self.calib = dict(ref_h=-1.0, R=np.round(world_rotation(acc0), 6).tolist(), accel0=acc0,
+                          intr=dict(width=424, height=240, fx=215.174, fy=215.174, ppx=214.642, ppy=120.462),
+                          depth_scale=0.001, max_range=3.0, stream="가짜 (sensors/sim.py)", filters="-",
+                          camera="SimCamera (가짜)")
+        self.scn = scenario
+        self.rng = np.random.default_rng(2)
+        self.nx = round(CAM_BED[0] / CAM_CELL)
+        self.ny = round(CAM_BED[1] / CAM_CELL)
+        self.gx, self.gy = np.meshgrid((np.arange(self.nx) + 0.5) * CAM_CELL,
+                                       (np.arange(self.ny) + 0.5) * CAM_CELL)
+        self.seq = 0
+
+    def packet(self):
+        np, st = self.np, self.scn.at()
+        bw, bd, bh = CARGO_BOX
+        cx, cy = st["cargo_x"] * CAM_BED[0], st["cargo_y"] * CAM_BED[1]
+        box = (abs(self.gx - cx) <= bw / 2) & (abs(self.gy - cy) <= bd / 2)
+        sd = 0.004 if st["moving"] else 0.002
+        h = np.where(box, bh, 0.0) + self.rng.normal(0, sd, box.shape)
+        h[self.rng.random(box.shape) < 0.03] = np.nan   # depth 가 안 잡힌 칸
+        body = zlib.compress(np.nan_to_num(h * 1000, nan=-32768).astype(np.int16).tobytes(), 1)
+        now = time.time()
+        header = json.dumps(dict(
+            seq=self.seq, t=now, frame_ts=now * 1000,
+            grid=dict(nx=self.nx, ny=self.ny, cell=CAM_CELL, x0=0.0, y0=0.0, unit="mm", nodata=-32768),
+            imu=dict(accel=self.calib["accel0"],
+                     tilt_change_deg=round(abs(self.rng.normal(0, 0.2 if st["moving"] else 0.03)), 3)),
+            stats=self.summarize(h, CAM_CELL),
+            sensors={"loadcell_g": None, "mpu6050_tilt_deg": None},
+            calib=self.calib,
+        )).encode()
+        self.seq += 1
+        return struct.pack("!I", len(header)) + header + body

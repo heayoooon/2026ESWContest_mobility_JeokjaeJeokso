@@ -1,7 +1,7 @@
 """디지털트윈 처리 코어 (순수 numpy — PC/라즈베리파이 공용, pyrealsense2 불필요).
 
 입력: depth 프레임(uint16, 1 unit = depth_scale m), depth intrinsics(dict), IMU accel 평균
-출력: 월드좌표 3D 점, 2.5D 높이맵, (비교용) 3D TSDF 볼륨
+출력: 월드좌표 3D 점, 2.5D 높이맵(+ 기록용 요약), (비교용) 3D TSDF 볼륨
 """
 import numpy as np
 
@@ -52,6 +52,34 @@ class HeightMapper:
         np.maximum.at(hm, flat, p[inb, 2] - self.ref_h)           # 셀별 최대 높이
         hm[np.isinf(hm)] = np.nan
         return hm.reshape(self.ny, self.nx)
+
+
+OCC_M = 0.02    # 기준면보다 이만큼(m) 높은 칸을 화물이 있는 칸으로 본다
+
+
+def summarize(h, cell, x0=0.0, y0=0.0, occ=OCC_M):
+    """높이맵 한 장 -> 기록용 요약 (UDP 헤더 'stats', 카메라 엑셀 한 행).
+
+    h 는 HeightMapper 출력(m, 기준면 = 0, 빈 칸 NaN). 좌표는 격자 좌표(m), 격자 원점 (x0, y0).
+    부피중심은 칸 높이로 가중한 중심이다 (화물 밀도가 고르다고 보면 형상으로 본 무게중심).
+    """
+    x0, y0 = float(x0), float(y0)       # JSON 으로 나가므로 numpy 스칼라를 남기지 않는다
+    valid = ~np.isnan(h)
+    hv = np.where(valid, h, 0.0)
+    occ_mask = hv > occ
+    n_occ = int(occ_mask.sum())
+    out = dict(valid_pct=round(float(valid.mean()) * 100, 1),
+               max_mm=round(float(hv[valid].max()) * 1000) if valid.any() else None,
+               mean_mm=None, area_m2=round(n_occ * cell * cell, 4), volume_l=0.0,
+               cx_m=None, cy_m=None, occ_mm=round(occ * 1000))
+    if n_occ:
+        iy, ix = np.nonzero(occ_mask)
+        w = hv[iy, ix]
+        out.update(mean_mm=round(float(w.mean()) * 1000),
+                   volume_l=round(float(w.sum()) * cell * cell * 1000, 2),
+                   cx_m=round(x0 + (float((ix * w).sum() / w.sum()) + 0.5) * cell, 3),
+                   cy_m=round(y0 + (float((iy * w).sum() / w.sum()) + 0.5) * cell, 3))
+    return out
 
 
 def voxel_downsample(pts, voxel=0.01):

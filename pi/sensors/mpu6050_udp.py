@@ -11,6 +11,7 @@ read_raw() 는 mpu6050.MPU6050.read_raw() 와 같은 모양
 실시간 확인: python3 tools/imu_udp_receiver.py
 """
 import json
+import select
 import socket
 import time
 
@@ -27,6 +28,8 @@ class MPU6050UDP:
         self.key = udp_key(addr)
         self.label = label or self.key
         self.last_seq = None
+        self.dropped = 0
+        self._last_t = None
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", port))
         self.sock.settimeout(timeout)
@@ -41,6 +44,33 @@ class MPU6050UDP:
         d = json.loads(data.decode("utf-8"))
         self.last_seq = d.get("seq")
         return (t_ns, d["ax"], d["ay"], d["az"], d["gx"], d["gy"], d["gz"], d["temp"])
+
+    def drain(self):
+        """기다리지 않고, 지금까지 쌓인 패킷을 전부 읽는다. [(t_ns, ax..temp), ...] (없으면 []).
+
+        파이프라인(acquisition/source.py)이 HX711 클럭 사이에서 부르므로 절대 블로킹하면 안 된다.
+        한꺼번에 여러 개가 쌓였으면 패킷마다 받은 시각이 같아져 자이로 적분의 dt 가 0 이 되므로,
+        지난 호출 시각부터 지금까지를 패킷 수로 나눠 시각을 펼친다."""
+        out = []
+        while select.select([self.sock], [], [], 0)[0]:
+            data, _ = self.sock.recvfrom(256)
+            try:
+                d = json.loads(data.decode("utf-8"))
+                row = (d["ax"], d["ay"], d["az"], d["gx"], d["gy"], d["gz"], d["temp"])
+            except (ValueError, KeyError):          # 깨진/다른 패킷은 버린다
+                continue
+            seq = d.get("seq")
+            if seq is not None and self.last_seq is not None and seq - self.last_seq > 1:
+                self.dropped += seq - self.last_seq - 1
+            self.last_seq = seq if seq is not None else self.last_seq
+            out.append(row)
+        if not out:
+            return []
+        now = time.monotonic_ns()
+        last = self._last_t if self._last_t is not None else now
+        self._last_t = now
+        n = len(out)
+        return [(last + (now - last) * (i + 1) // n,) + r for i, r in enumerate(out)]
 
     def close(self):
         self.sock.close()
