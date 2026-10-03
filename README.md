@@ -37,7 +37,7 @@
 |---|---|
 | `pi/sensors/` | 센서 드라이버: HX711 다채널(하중 · 장력), MPU-6050(I2C 직결 · ESP32 UDP), PC용 가짜 센서 |
 | `pi/pipeline.py` | 센서 실행 파일: 수집 → 판정 → 기록. 단계 사이는 `Frame`(센서값) · `Result`(판정 결과)로 주고받는다. 판정은 pi 에서 한다 |
-| `pi/acquisition/` | 공통 시계(`CLOCK_MONOTONIC`) 기반 수집 · 정렬 · 기록 (`source.py` → `Frame`, `log_xlsx.py` 엑셀, `log_sync.py` raw CSV) |
+| `pi/acquisition/` | 공통 시계(`CLOCK_MONOTONIC`) 기반 수집 · 정렬 · 기록 (`source.py` → `Frame`, `log_xlsx.py` 엑셀, `log_camera.py` 카메라 엑셀, `log_sync.py` raw CSV) |
 | `pi/analysis/` | 판정: `analyzer.py`(`Frame` → `Result`), 총하중 · 무게중심 (`cog.py`) |
 | `pi/calibration/` | 로드셀 영점 · 배율(`calib.json`), IMU 바이어스 · 장착 방향(`imu_cal.json`) |
 | `pi/tools/` | HX711 배선 점검, IMU 스캔 · 실시간 각도, I2C 진단 |
@@ -109,7 +109,7 @@ python3 tools/check_wiring.py                   # HX711 배선 확인 (live 로 
 python3 calibration/calibrate.py tare           # 로드셀 영점 -> span / multi / cell 로 배율
 python3 calibration/imu_calibrate.py --auto     # IMU rest pose 보정 -> imu_cal.json
 python3 tools/imu_angle.py                      # IMU 실시간 roll/pitch (상보필터 α=0.98)
-LOG_SECONDS=60 python3 pipeline.py              # 전 센서 한 시계로 -> 무게중심 -> 엑셀
+LOG_SECONDS=60 python3 pipeline.py              # 전 센서 한 시계로 -> 무게중심 -> 엑셀 (+ 트윈 노드가 보내면 _camera 엑셀)
 python pipeline.py --sim                        # PC 에서 가짜 센서로
 ```
 

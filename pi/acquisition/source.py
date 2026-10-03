@@ -19,6 +19,7 @@ from acquisition.console import say
 from acquisition.frame import Frame, ImuReading
 from sensors.hx711_bus import HX711Timeout
 from sensors.mpu6050 import cal_key, find_cal, load_cal, tilt, to_units
+from sensors.mpu6050_udp import MPU6050UDP, udp_key
 
 G_TO_N = 9.80665 / 1000     # 질량(g) -> 힘(N)
 ALPHA = 0.98                # 기울기 상보필터 (tools/imu_angle.py 와 같은 값)
@@ -51,30 +52,35 @@ class ImuSet:
             self.next_t = now + self.period     # 밀렸으면 기준을 다시 잡는다
         for label, dev, cal in self.sensors:
             try:
-                r = dev.read_raw()
+                # ESP32 무선(drain)은 기다리지 않고 쌓인 패킷 전부, I2C 는 한 번 읽는다
+                rows = dev.drain() if hasattr(dev, "drain") else [dev.read_raw()]
             except Exception:                   # I2C 한 번 실패는 흔하다. 세고 넘어간다
                 self.errors[label] += 1
                 continue
-            v = to_units(r[1:7], cal)
-            s = self.sum[label]
-            for i in range(6):
-                s[i] += v[i]
-            p = self.peak[label]
-            for i in range(2):
-                if abs(v[i]) > abs(p[i]):
-                    p[i] = v[i]
-            self.n[label] += 1
+            for r in rows:
+                self._add(label, cal, r)
 
-            # 상보필터: 자이로를 적분하고 가속도(중력 방향)로 천천히 끌어당긴다
-            ar, ap = tilt(v[0], v[1], v[2])
-            t = r[0] / 1e9
-            prev = self.angle[label]
-            if prev is None:
-                self.angle[label] = (ar, ap, t)
-            else:
-                dt = t - prev[2]
-                self.angle[label] = (ALPHA * (prev[0] + v[3] * dt) + (1 - ALPHA) * ar,
-                                     ALPHA * (prev[1] + v[4] * dt) + (1 - ALPHA) * ap, t)
+    def _add(self, label, cal, r):
+        v = to_units(r[1:7], cal)
+        s = self.sum[label]
+        for i in range(6):
+            s[i] += v[i]
+        p = self.peak[label]
+        for i in range(2):
+            if abs(v[i]) > abs(p[i]):
+                p[i] = v[i]
+        self.n[label] += 1
+
+        # 상보필터: 자이로를 적분하고 가속도(중력 방향)로 천천히 끌어당긴다
+        ar, ap = tilt(v[0], v[1], v[2])
+        t = r[0] / 1e9
+        prev = self.angle[label]
+        if prev is None:
+            self.angle[label] = (ar, ap, t)
+        else:
+            dt = t - prev[2]
+            self.angle[label] = (ALPHA * (prev[0] + v[3] * dt) + (1 - ALPHA) * ar,
+                                 ALPHA * (prev[1] + v[4] * dt) + (1 - ALPHA) * ap, t)
 
     def take(self):
         """지난 take() 이후 구간 값 {라벨: ImuReading}. 그 사이 한 번도 못 읽은 IMU 는 None."""
@@ -152,7 +158,7 @@ def open_real(cfg, notes):
     cal_path = find_cal(cfg.imu_cal)
     imu_cal = load_cal(cal_path) if cal_path else {}
     imus = []
-    for addr, label in zip(cfg.imu_addrs, cfg.imu_labels):
+    for addr, label in zip(cfg.imu_addrs, cfg.imu_i2c_labels):
         m = None
         try:
             m = MPU6050(addr, bus=cfg.imu_bus, hz=cfg.imu_hz, label=label)
@@ -164,6 +170,14 @@ def open_real(cfg, notes):
             notes.append("IMU %s(%s) 못 엶: %s" % (label, hex(addr), e))
             continue
         imus.append((label, m, imu_cal.get(cal_key(cfg.imu_bus, addr))))
+    if cfg.imu_udp_port:                        # ESP32 무선 센서
+        try:
+            u = MPU6050UDP(cfg.imu_udp_addr, port=cfg.imu_udp_port, label=cfg.imu_udp_label)
+            imus.append((cfg.imu_udp_label, u, imu_cal.get(udp_key(cfg.imu_udp_addr))))
+            say("IMU   %s ESP32 UDP %d 대기 (패킷이 와야 값이 찬다)" % (cfg.imu_udp_label, cfg.imu_udp_port))
+        except OSError as e:
+            say("! IMU %s UDP %d 못 엶: %s" % (cfg.imu_udp_label, cfg.imu_udp_port, e))
+            notes.append("IMU %s UDP %d 못 엶: %s" % (cfg.imu_udp_label, cfg.imu_udp_port, e))
     if not imus:
         say("  i2cdetect -y %d 로 68/69 가 보이는지. 진단 스크립트를 돌린 뒤라면 "
             "pinctrl set 2 a3 pu; pinctrl set 3 a3 pu 로 I2C 핀을 되돌린다" % cfg.imu_bus)

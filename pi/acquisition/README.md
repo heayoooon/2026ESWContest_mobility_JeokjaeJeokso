@@ -87,10 +87,14 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/l
 | `COG_CORNERS` | `FL,FR,RL,RR` | 무게중심용 바닥 셀. 앞왼,앞오,뒤왼,뒤오 순서 |
 | `BED_L` / `BED_W` | 없음 | 앞왼-앞오 / 앞왼-뒤왼 셀 간격(mm). 없으면 무게중심을 % 로 |
 | `IMU_BUS` | `1` | I2C 버스 |
-| `IMU_ADDRS` | `0x68,0x69` | 주소 |
-| `IMU_LABELS` | `imu1,imu2` | 주소 순서대로 붙일 이름 |
+| `IMU_ADDRS` | `0x68` | 파이 I2C 에 직접 물린 센서 주소 |
+| `IMU_LABELS` | `imu1` | 주소 순서대로 붙일 이름 |
+| `IMU_UDP_PORT` | `5005` | ESP32 무선 센서를 받을 UDP 포트. ESP32 펌웨어의 `PI_PORT` 와 같아야 한다. `CAM_PORT` 와 달라야 한다. `0` 이면 안 받음 |
+| `IMU_UDP_LABEL` | `imu2` | ESP32 센서 이름 (CSV 열 `imu2_*`) |
+| `IMU_UDP_ADDR` | `0x68` | ESP32 센서의 MPU 주소. 보정 키는 `esp32:<주소>` |
 | `IMU_HZ` | `100` | 목표 샘플레이트 |
 | `IMU_CAL` | 자동 | `imu_cal.json` 경로. 비우면 `calibration/imu_cal.json` |
+| `CAM_PORT` | `5006` | `pipeline.py` 가 트윈 노드(D435i) 패킷을 받을 UDP 포트. 패킷이 오면 `<이름>_camera.xlsx`. `0` 이면 안 받음 |
 | `LOG_DIR` | `acquisition/logs` | 로그 상위 폴더 |
 | `LOG_SECONDS` | `0` | 기록 길이. 0 이면 Ctrl+C 까지 |
 | `LOG_NAME` | 시각 | 런 이름 (`log_sync.py` 는 폴더, `pipeline.py` 는 파일 이름) |
@@ -137,6 +141,7 @@ HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 acquisition/log_sync.py
 | `frame.py` | `Frame` / `ImuReading` 정의. 단계 사이의 계약 |
 | `source.py` | 센서 열기 · HX711 대기 루프 · IMU 구간 평균 → `FrameSource.frames()` 가 `Frame` 을 낸다 |
 | `log_xlsx.py` | `XlsxSink`: `write(frame, result)` → CSV 한 행, 끝날 때 엑셀 |
+| `log_camera.py` | `CameraLog`: 트윈 노드 UDP 패킷을 **별도 프로세스**로 받아 `<이름>_camera` CSV / 엑셀 ([아래](#카메라-엑셀-이름_cameraxlsx)) |
 | `../analysis/analyzer.py` | `Analyzer(cfg)(frame)` → `Result(total_g, cog)`. 계산은 `../analysis/cog.py` |
 | `../pipeline.py` | 위를 잇는 실행 파일 |
 
@@ -144,9 +149,11 @@ HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 acquisition/log_sync.py
 
 `--sim` 을 주면 가짜 센서(`sim.py`)로 전체 흐름이 돈다. 18초쯤 제동하다 화물이 앞으로
 밀리고 T1 벨트가 느슨해지는 장면이 들어 있어서, 엑셀에서 그 변화가 보이면 정상이다.
+가짜 카메라도 같이 돌아서 `sim_<시각>_camera.xlsx` 가 생기고, 같은 경과(초)에 부피중심이 앞오른쪽으로 옮겨진다.
+가감속 중 로드셀 무게중심이 출렁이는 건 하중 이동이라 카메라 쪽에는 안 보인다.
 
 ```bash
-pip install openpyxl                  # 처음 한 번
+pip install openpyxl numpy            # 처음 한 번 (numpy 는 가짜 카메라용)
 cd pi
 python pipeline.py --sim                          # Ctrl+C 로 끝. LOG_SECONDS=30 이면 30초
 ```
@@ -211,6 +218,7 @@ LOG_SECONDS=60 python3 pipeline.py               # 60초 -> acquisition/logs/<�
 |---|---|
 | `logs/<이름>.xlsx` | 끝날 때(Ctrl+C / `LOG_SECONDS` / kill / SSH 끊김) CSV 로 만든다 |
 | `logs/<이름>.csv` | 기록하면서 1초마다 디스크에 쓴다. 전원이 나가도 여기까지 남고 엑셀로 바로 열린다 (UTF-8 BOM) |
+| `logs/<이름>_camera.xlsx` / `.csv` | 카메라 패킷이 왔을 때만. [카메라 엑셀](#카메라-엑셀-이름_cameraxlsx) |
 | `calibration/calib.json` | 채널별 offset / scale. `calibration/calibrate.py` 가 만든다 |
 
 CSV 만 남았을 때(전원 차단 등) 엑셀 다시 만들기:
@@ -218,6 +226,44 @@ CSV 만 남았을 때(전원 차단 등) 엑셀 다시 만들기:
 ```bash
 python3 -c "from acquisition import log_xlsx; log_xlsx.build_xlsx('acquisition/logs/X.csv', 'acquisition/logs/X.xlsx')"
 ```
+
+### 카메라 엑셀 (`<이름>_camera.xlsx`)
+
+D435i 는 센서 `Frame` 에 섞지 않는다. 트윈 노드(`twin/pi_twin_node.py`)가 따로 돌며 높이맵을 UDP 로
+보내고, `pipeline.py` 가 기록하는 동안 `log_camera.py` 가 **별도 프로세스**로 받아 패킷 하나를 한 행으로 적는다.
+같은 프로세스 스레드로 받으면 GIL 때문에 HX711 클럭이 밀릴 수 있어서다 (아래 설계 메모).
+
+```bash
+python3 twin/pi_twin_node.py                 # 카메라가 이 파이에 있으면 (기본 127.0.0.1:5006 = CAM_PORT. 5005 는 ESP32 IMU)
+python3 twin/pi_twin_node.py <파이 주소>      # 카메라가 다른 노드(display)에 있으면 (그쪽 ~/d435i/.venv 에서)
+LOG_SECONDS=60 python3 pipeline.py           # -> <이름>.xlsx + <이름>_camera.xlsx
+```
+
+트윈 노드를 먼저 띄워 두고 `pipeline.py` 를 돌린다. 패킷이 하나도 안 오면 카메라 파일은 안 만들고
+센서 엑셀 요약 시트에 "카메라 패킷 없음" 만 남긴다.
+
+| 열 | 내용 |
+|---|---|
+| 시각, 경과(초) | **이 파이가 받은 시각.** 경과(초) 0 이 센서 엑셀과 같아서 두 파일을 경과(초)로 바로 맞춰 볼 수 있다 |
+| 유효 칸(%) | 높이맵에서 depth 가 잡힌 칸 비율 |
+| 최고 / 평균 높이(mm) | 기준면 위 최고 높이, 화물 칸 평균 높이 |
+| 적재 면적(m²), 부피(L) | 기준면보다 20 mm 넘게 높은 칸을 화물로 보고 합한 것 |
+| 부피중심 X, Y(m) | 칸 높이로 가중한 중심. 밀도가 고르면 형상으로 본 무게중심. **카메라 격자 좌표**라 로드셀 무게중심과 원점 · 방향이 다르다 |
+| 카메라 기울기 변화(°) | 트윈 노드 시작 때보다 카메라가 기운 각. 2° 를 넘으면 `moved` |
+| 카메라 가속도 x/y/z(m/s²) | D435i 내장 IMU. 카메라 좌표 (x 오른쪽, y 아래, z 앞). 정지 상태에선 위쪽을 가리킨다 |
+| loadcell_g … (트윈 노드) | 트윈 노드 헤더의 `sensors` 값 (지금은 자리표시자라 빈칸). 열은 첫 패킷의 키로 정한다 |
+| seq, 카메라 프레임 시각(ms), 지연(ms), flags | 트윈 노드 순번, RealSense 프레임 타임스탬프, 보낸 시각 → 받은 시각 (다른 장비면 시계 차이 포함), `gap:N`(놓친 패킷) · `restart` · `moved` · `no_stats` |
+
+`요약` 시트: 보낸 곳, 받은 / 놓친 프레임, 지연, 높이맵 격자 · 원점, 열마다 통계.
+
+`트윈 기준` 시트: 격자 (nx, ny, 칸 크기, 원점 x0 · y0) + 설치 보정값 (기준면 높이 `ref_h`, 월드 회전 `R`, 설치 때 가속도,
+depth intrinsics · `depth_scale`, 최대 거리, 스트림 · 필터, 카메라 시리얼, 녹화 파일 이름). 트윈 노드가 도중에 다시 시작하면
+블록이 하나 더 생긴다. 칸 `(ix, iy)` 의 월드 좌표 = `(x0 + (ix+0.5)·칸, y0 + (iy+0.5)·칸, ref_h + 높이/1000)`. 월드 원점이 카메라, z 가 위쪽이다.
+
+컬러 · depth 원본은 카메라 엑셀이 아니라 트윈 노드의 녹화 파일(`<시각>_d435i.db3`, 기본 `logs/`)에 있다.
+카메라 엑셀의 `카메라 프레임 시각(ms)` 열이 그 파일의 depth 프레임 타임스탬프와 같아서, 이걸로 센서 엑셀 · 카메라 엑셀 · 녹화를 맞춘다.
+
+CSV 만 남았을 때는 `log_camera.build_xlsx('X_camera.csv', 'X_camera.xlsx')` 로 다시 만든다 (`트윈 기준` 시트는 빠진다).
 
 ## `log_sync.py` 가 만드는 파일
 

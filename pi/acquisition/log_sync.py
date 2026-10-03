@@ -105,7 +105,7 @@ def imu_worker(cfg, q, stop):
     from sensors.mpu6050 import MPU6050
 
     mpus = []
-    for addr, label in zip(cfg.imu_addrs, cfg.imu_labels):
+    for addr, label in zip(cfg.imu_addrs, cfg.imu_i2c_labels):
         try:
             m = MPU6050(addr, bus=cfg.imu_bus, hz=cfg.imu_hz, label=label)
             who = m.check()
@@ -241,7 +241,7 @@ def main():
     imu_f.write("t,t_ns,imu,ax,ay,az,gx,gy,gz,temp\n")
 
     st_hx = Stat(1.0 / cfg.hx_rate)
-    st_imu = {l: Stat(1.0 / cfg.imu_hz) for l in cfg.imu_labels}
+    st_imu = {l: Stat(1.0 / cfg.imu_hz) for l in cfg.imu_i2c_labels}
     n_flagged = 0
     n_timeout = 0
     fatal = []

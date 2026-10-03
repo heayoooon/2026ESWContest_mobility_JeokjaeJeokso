@@ -11,6 +11,8 @@ Result: calibration/imu_cal.json (read by sensors/mpu6050.py).
   python3 calibration/imu_calibrate.py --auto              # no prompts
   python3 calibration/imu_calibrate.py --auto --gyro-only  # gyro bias only (needs still, keeps accel/up)
   python3 calibration/imu_calibrate.py --only bus1:0x68    # limit to one sensor
+  python3 calibration/imu_calibrate.py --udp --only esp32:0x68   # ESP32 wireless sensor (UDP, IMU_UDP_PORT, default 5005)
+                                                                  # stop pipeline.py first (it holds the port)
 """
 import json
 import os
@@ -22,24 +24,37 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 from sensors.mpu6050 import (ACC_SCALE, CAL_PATH, MPU6050, cal_key, detect_up,  # noqa: E402
                              find_all, tilt, to_units)
+from sensors.mpu6050_udp import MPU6050UDP, udp_key  # noqa: E402
 
 AUTO = "--auto" in sys.argv
 GYRO_ONLY = "--gyro-only" in sys.argv
+UDP = "--udp" in sys.argv
 ONLY = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else None
 AXES = ("ax", "ay", "az", "gx", "gy", "gz")    # read_raw()[1:7] order
 
-mpus = find_all()
-if not mpus:
-    raise SystemExit("no MPU-6050 found. run tools/imu_scan.py")
+# (key, open function). ESP32 over UDP has no bus; its key is esp32:<addr>
+targets = [(cal_key(bus, a), lambda bus=bus, a=a: MPU6050(a, bus=bus)) for bus, a in find_all()]
+if UDP:
+    addr = int(os.environ.get("IMU_UDP_ADDR", "0x68"), 0)
+    port = int(os.environ.get("IMU_UDP_PORT", "5005"), 0)
+    targets.append((udp_key(addr), lambda: MPU6050UDP(addr, port=port, timeout=3.0)))
+if not targets:
+    raise SystemExit("no MPU-6050 found. run tools/imu_scan.py (ESP32: add --udp)")
 
 cal = json.load(open(CAL_PATH)) if os.path.exists(CAL_PATH) else {}
 STILL_SD = 25  # LSB; resting gyro sd is ~5
 
-for bus, a in mpus:
-    key = cal_key(bus, a)
+for key, open_dev in targets:
     if ONLY and key != ONLY:
         continue
-    m = MPU6050(a, bus=bus)
+    try:
+        m = open_dev()
+    except OSError as e:
+        print(f"[{key}] cannot open: {e}")
+        continue
+    is_udp = key.startswith("esp32:")
+    if is_udp:
+        m.drain()                           # throw away packets queued before the sensor was laid flat
     if AUTO:
         print(f"\n[{key}] sampling now ({'still' if GYRO_ONLY else 'rest pose, still'})")
     else:
@@ -48,10 +63,14 @@ for bus, a in mpus:
     for attempt in range(1, 8):
         S = {k: [] for k in AXES}
         for _ in range(300):
-            r = m.read_raw()
+            try:
+                r = m.read_raw()
+            except OSError as e:            # socket.timeout: ESP32 silent
+                raise SystemExit(f"[{key}] no packet: {e}. Is the ESP32 on the same Wi-Fi / is pipeline.py still running?")
             for k, v in zip(AXES, r[1:7]):
                 S[k].append(v)
-            time.sleep(0.01)
+            if not is_udp:
+                time.sleep(0.01)
         noise = {k: statistics.pstdev(S[k]) for k in S}
         worst = max(noise["gx"], noise["gy"], noise["gz"])
         if worst <= STILL_SD:
