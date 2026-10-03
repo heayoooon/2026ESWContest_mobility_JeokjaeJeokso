@@ -7,7 +7,7 @@
 물리고, AD0 를 3.3V 로 올린 쪽이 0x69, 비운 쪽이 0x68 이 된다. 버스 하나에
 주소가 둘뿐이라 MPU-6050 은 버스당 최대 2개다.
 
-물리 단위가 필요하면(log_xlsx.py) to_units() 로 바꾼다. calibration/imu_calibrate.py 가 만든
+물리 단위가 필요하면(acquisition/source.py) to_units() 로 바꾼다. calibration/imu_calibrate.py 가 만든
 calibration/imu_cal.json 이 있으면 그 바이어스를 빼고, 장착 자세의 up 축이 +Z 가 되도록
 축을 돌린다. ESP32 로 받는 센서(mpu6050_udp.py)도 같은 규칙을 쓴다.
 """

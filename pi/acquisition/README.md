@@ -93,7 +93,7 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/l
 | `IMU_CAL` | 자동 | `imu_cal.json` 경로. 비우면 `calibration/imu_cal.json` |
 | `LOG_DIR` | `acquisition/logs` | 로그 상위 폴더 |
 | `LOG_SECONDS` | `0` | 기록 길이. 0 이면 Ctrl+C 까지 |
-| `LOG_NAME` | 시각 | 런 이름 (`log_sync.py` 는 폴더, `log_xlsx.py` 는 파일 이름) |
+| `LOG_NAME` | 시각 | 런 이름 (`log_sync.py` 는 폴더, `pipeline.py` 는 파일 이름) |
 
 ```bash
 # 설정 확인만
@@ -122,15 +122,23 @@ python3 tools/check_wiring.py
 # 3) 모서리를 하나씩 눌러 라벨 확정 (움직이는 채널에 * 가 붙는다)
 python3 tools/check_wiring.py live
 
-# 4) 기록 (raw CSV). 사람이 볼 엑셀은 아래 log_xlsx.py
+# 4) 기록 (raw CSV). 사람이 볼 엑셀은 아래 pipeline.py
 HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 acquisition/log_sync.py
 ```
 
-## 센서 전부 → 엑셀 (`log_xlsx.py`)
+## 센서 전부 → 엑셀 (`pipeline.py`)
 
 바닥 로드셀(하중)·벨트 장력·IMU 를 한 시계로 읽어 **시간순 엑셀** 로 남긴다.
-한 행 = HX711 샘플 한 번(약 10Hz). HX711 변환을 기다리는 ~100ms 동안 IMU 를
+한 행 = 한 `Frame` = HX711 샘플 한 번(약 10Hz). HX711 변환을 기다리는 ~100ms 동안 IMU 를
 `IMU_HZ` 로 읽어 그 구간 평균을 같은 행에 붙인다.
+
+| 파일 | 하는 일 |
+|---|---|
+| `frame.py` | `Frame` / `ImuReading` 정의. 단계 사이의 계약 |
+| `source.py` | 센서 열기 · HX711 대기 루프 · IMU 구간 평균 → `FrameSource.frames()` 가 `Frame` 을 낸다 |
+| `log_xlsx.py` | `XlsxSink`: `write(frame, result)` → CSV 한 행, 끝날 때 엑셀 |
+| `../analysis/analyzer.py` | `Analyzer(cfg)(frame)` → `Result(total_g, cog)`. 계산은 `../analysis/cog.py` |
+| `../pipeline.py` | 위를 잇는 실행 파일 |
 
 ### PC 에서 먼저 (VS Code, 파이 없이)
 
@@ -140,10 +148,10 @@ HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 acquisition/log_sync.py
 ```bash
 pip install openpyxl                  # 처음 한 번
 cd pi
-python acquisition/log_xlsx.py --sim              # Ctrl+C 로 끝. LOG_SECONDS=30 이면 30초
+python pipeline.py --sim                          # Ctrl+C 로 끝. LOG_SECONDS=30 이면 30초
 ```
 
-VS Code 실행 구성(F5)을 쓴다면 program 경로를 `pi/acquisition/log_xlsx.py` 로 맞춘다.
+VS Code 실행 구성(F5)을 쓴다면 program 경로를 `pi/pipeline.py` 로 맞춘다.
 결과는 `pi/acquisition/logs/sim_<시각>.xlsx`. 시뮬레이션 결과는 파일 이름이 `sim_` 으로
 시작하고 요약 시트에도 "시뮬레이션" 이라고 적혀서 실측과 섞이지 않는다.
 
@@ -163,7 +171,7 @@ python3 calibration/calibrate.py cell T1 1000    # T1 고리에 1kg 매달기 ->
 python3 calibration/calibrate.py cell T2 1000
 python3 calibration/calibrate.py show            # 확인
 
-LOG_SECONDS=60 python3 acquisition/log_xlsx.py   # 60초 -> acquisition/logs/<시각>.xlsx
+LOG_SECONDS=60 python3 pipeline.py               # 60초 -> acquisition/logs/<시각>.xlsx
 ```
 
 - `span` 은 바닥 채널 **합**이 올린 무게와 맞게 공통 배율 하나를 구한다(장력 채널은 빠진다).
@@ -174,10 +182,13 @@ LOG_SECONDS=60 python3 acquisition/log_xlsx.py   # 60초 -> acquisition/logs/<�
   하면 합계에서 그 셀이 빠지는 셈이라 공통 배율부터 틀린다.
 - `HX_INVERT` 를 바꾸면 그 채널의 원시값 부호가 바뀌므로 `tare` 부터 다시 한다. `calib.json` 에
   영점 잡을 때의 반전 상태가 남아서, 안 맞으면 `span`/`cell` 은 거부하고 로거는 그 채널을 raw 만 적는다.
-- 보정값이 없는 채널은 g/N 없이 raw 만 적고, 요약 시트 메모에 남는다.
-- 시작할 때 DT 가 안 떨어지는 모듈은 **빼고** 기록한다 (화면 경고 + 요약 시트 메모).
+- **열 구성은 `HX_LABELS` / `IMU_LABELS` 로 고정된다.** 한 행에 설정한 HX711 전 채널과 IMU 전부의
+  자리가 항상 있고, 값이 없는 센서는 칸만 비운다. 실행마다 열이 달라지지 않는다.
+- 보정값이 없는 채널은 g/N 칸이 비고 raw 만 채워진다 (요약 시트 메모).
+- 시작할 때 DT 가 안 떨어지는 모듈은 읽기에서는 빼지만 열은 남긴다 (화면 경고 + 요약 시트에 "응답 없음").
+  바닥 셀이 하나라도 비면 총하중 · 무게중심도 비운다.
 - IMU 는 `calibration/imu_cal.json` 을 찾아 바이어스를 빼고 장착 자세(up 축)를 돌린다.
-  못 찾으면 보정 없이 적고, IMU 가 아예 없어도 나머지는 기록한다.
+  못 찾으면 보정 없이 적고, 못 연 IMU 는 칸을 비운 채 나머지를 기록한다.
 - SSH 로 길게 돌릴 땐 `tmux` 안에서. SSH 가 끊기면(SIGHUP) 그때까지를 엑셀로 만들고 끝난다.
 
 ### 엑셀 열 (`측정` 시트)
