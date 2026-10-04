@@ -86,6 +86,14 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/l
 | `HX_TENSION` | `T1,T2` | 벨트 장력(인장형) 채널 라벨. 나머지는 바닥 하중 채널 |
 | `COG_CORNERS` | `FL,FR,RL,RR` | 무게중심용 바닥 셀. 앞왼,앞오,뒤왼,뒤오 순서 |
 | `BED_L` / `BED_W` | 없음 | 앞왼-앞오 / 앞왼-뒤왼 셀 간격(mm). 없으면 무게중심을 % 로 |
+| `LOAD_MAX_KG` | `15` | 최대 적재(kg). 넘으면 위험, 90% 넘으면 주의 |
+| `COG_WARN` / `COG_DANGER` | `25` / `15` | 무게중심이 판 가장자리에서 셀 간격의 이 % 안이면 주의 / 위험 |
+| `COG_RESID` | `10` | IMU 예측 무게중심과 실측의 차 허용(셀 간격 %). 넘으면 주의, 2배면 위험 (화물 이동) |
+| `COG_LAG` | `0.2` | 로드셀이 IMU 보다 늦는 시간(초) |
+| `COG_H` | `220` | 무게중심 높이 h 시작값(mm). 주행 중 데이터로 고쳐 나간다 |
+| `JUDGE_IMU` | IMU 첫 번째 | 하중 이동 예측 · 무게 보정에 쓸 차체 IMU |
+| `TENSION_A` / `TENSION_MU` / `TENSION_ANGLE` | `0.5` / `0.4` / `90` | 장력 하한 = 그쪽 무게 × g(A−μ)/(2μ sinα). `HX_TENSION` 첫 번째 = N쪽(앞 두 셀), 두 번째 = S쪽(뒤 두 셀) |
+| `TENSION_FLOOR` / `TENSION_MAX` | `2` / `80` | 장력 하한의 최솟값 / 상한(N) |
 | `IMU_BUS` | `1` | I2C 버스 |
 | `IMU_ADDRS` | `0x68` | 파이 I2C 에 직접 물린 센서 주소 |
 | `IMU_LABELS` | `imu1` | 주소 순서대로 붙일 이름 |
@@ -142,13 +150,15 @@ HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 acquisition/log_sync.py
 | `source.py` | 센서 열기 · HX711 대기 루프 · IMU 구간 평균 → `FrameSource.frames()` 가 `Frame` 을 낸다 |
 | `log_xlsx.py` | `XlsxSink`: `write(frame, result)` → CSV 한 행, 끝날 때 엑셀 |
 | `log_camera.py` | `CameraLog`: 트윈 노드 UDP 패킷을 **별도 프로세스**로 받아 `<이름>_camera` CSV / 엑셀 ([아래](#카메라-엑셀-이름_cameraxlsx)) |
-| `../analysis/analyzer.py` | `Analyzer(cfg)(frame)` → `Result(total_g, cog)`. 계산은 `../analysis/cog.py` |
+| `../analysis/analyzer.py` | `Analyzer(cfg)(frame)` → `Result` (총하중 · 무게중심 + 판정 4개 · 위험도). [../README.md](../README.md#판정--위험도-analysis) |
 | `../pipeline.py` | 위를 잇는 실행 파일 |
 
 ### PC 에서 먼저 (VS Code, 파이 없이)
 
 `--sim` 을 주면 가짜 센서(`sim.py`)로 전체 흐름이 돈다. 18초쯤 제동하다 화물이 앞으로
-밀리고 T1 벨트가 느슨해지는 장면이 들어 있어서, 엑셀에서 그 변화가 보이면 정상이다.
+밀리고 T1 벨트가 느슨해지는 장면, 41~45초에 4kg 을 더 실어 15kg 을 넘기는 장면이 들어 있다.
+화면에 화물 이동 · 무게중심 · 장력 · 적재 알림이 한 번씩 뜨고, 엑셀 `판정` 시트에 남으면 정상이다.
+판 크기는 `BED_L=250 BED_W=392`(env.sh 실측값)가 기본이고, h 추정값은 시나리오의 150mm 근처로 수렴한다.
 가짜 카메라도 같이 돌아서 `sim_<시각>_camera.xlsx` 가 생기고, 같은 경과(초)에 부피중심이 앞오른쪽으로 옮겨진다.
 가감속 중 로드셀 무게중심이 출렁이는 건 하중 이동이라 카메라 쪽에는 안 보인다.
 

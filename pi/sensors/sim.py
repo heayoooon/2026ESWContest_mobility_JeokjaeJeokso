@@ -7,7 +7,10 @@ SimCamera 는 D435i 트윈 노드(twin/pi_twin_node.py)의 UDP 패킷을 흉내 
 
     40초 주기   0~6s 정차   6~10s 가속   12~16s 좌회전
                 16~19s 제동   24~29s 우회전   34~38s 감속 정차
-    18초에 한 번  제동하다 화물이 앞으로 밀리고(무게중심 이동) T1 벨트가 느슨해진다
+    화물 12kg, 무게중심 높이 150mm. 가감속하면 그만큼 하중이 옮겨지고, 로드셀은 IMU 보다 0.2초 늦다
+    18초에 한 번  제동하다 화물이 앞으로 밀리고(무게중심 이동) T1(N쪽) 벨트가 느슨해진다
+    41~45초      정차 중에 4kg 을 더 실었다가 내린다 (최대 15kg 넘음)
+    -> 판정(analysis/)의 적재 · 무게중심 · 화물 이동 · 장력 알림이 다 한 번씩 뜬다
 
 실제 셀이 아니므로 보정값(offset/scale)도 여기서 정한 가짜 값을 쓴다 (calib.json 무시).
 """
@@ -23,7 +26,12 @@ from sensors.mpu6050 import ACC_SCALE, GYR_SCALE, TEMP_OFFSET, TEMP_SCALE
 
 CYCLE = 40.0            # 주행 시나리오 주기(초)
 SLIP_AT = 18.0          # 화물이 밀리는 시각(초). 한 번만
-CARGO_G = 3000.0        # 화물 무게(g)
+EXTRA_AT = (41.0, 45.0) # 짐을 더 실었다 내리는 구간(초). 한 번만
+CARGO_G = 12000.0       # 화물 무게(g)
+EXTRA_G = 4000.0        # 더 싣는 짐(g)
+CARGO_H = 150.0         # 화물 무게중심 높이(mm). 하중 이동 = h x 가속도(G)
+BED_MM = (250.0, 392.0) # 셀 간격 (mm). pipeline.py --sim 의 BED_L/BED_W 기본값과 같다
+LOAD_LAG = 0.2          # 로드셀이 IMU 보다 늦는 시간(초). 2026-10-03 실측
 G_TO_N = 9.80665 / 1000
 NOISE_COUNTS = 60       # HX711 노이즈 (카운트, 표준편차)
 SCALE = {"load": 0.02, "tension": 0.0047}   # g/count. 바닥 셀 / 인장형 10kg 셀 규모
@@ -47,15 +55,15 @@ class Scenario:
     def __init__(self, t0=None):
         self.t0 = time.monotonic() if t0 is None else t0    # 다른 프로세스(SimCamera)와 같은 시각표를 쓰려면 t0 를 넘긴다
 
-    def at(self):
-        t = time.monotonic() - self.t0
+    def at(self, lag=0.0):
+        t = time.monotonic() - self.t0 - lag
         c = t % CYCLE
         ax = _window(c, 6, 10, 0.25) + _window(c, 16, 19, -0.35) + _window(c, 34, 38, -0.2)
         ay = _window(c, 12, 16, 0.2) + _window(c, 24, 29, -0.25)
         slipped = t >= SLIP_AT
-        tight = min(1.0, t / 3.0)                       # 처음 3초 동안 벨트를 조인다
+        tight = min(1.0, max(0.0, t) / 3.0)             # 처음 3초 동안 벨트를 조인다
         cx = 0.52 + (0.05 if slipped else 0.0)          # 화물이 실제로 놓인 자리 (0~1). 밀리면 앞오른쪽으로
-        cy = 0.47 - (0.12 if slipped else 0.0)
+        cy = 0.47 - (0.24 if slipped else 0.0)
         return {
             "moving": 6 <= c < 38,
             "ax": ax,                                   # 종가속도(G). + = 가속
@@ -63,12 +71,13 @@ class Scenario:
             "yaw": _window(c, 12, 16, 15) + _window(c, 24, 29, -18),    # deg/s
             "cargo_x": cx,
             "cargo_y": cy,
-            # 무게중심 (0~1). x 왼->오, y 앞->뒤. 가속하면 뒤로, 좌회전하면 오른쪽으로 쏠린다
-            "x": cx + 0.16 * ay,
-            "y": cy + 0.12 * ax,
-            # 벨트 장력(N). 관성으로 화물이 벨트를 당기면 오른다
-            "t1": 55 * tight - (28 if slipped else 0) + 25 * abs(ax),
-            "t2": 60 * tight + 25 * abs(ay),
+            # 무게중심 (0~1). x 왼->오, y 앞->뒤. 가속하면 뒤로, 좌회전하면 오른쪽으로 h x 가속도 만큼 쏠린다
+            "x": cx + CARGO_H / BED_MM[0] * ay,
+            "y": cy + CARGO_H / BED_MM[1] * ax,
+            "load_g": CARGO_G + (EXTRA_G if EXTRA_AT[0] <= t < EXTRA_AT[1] else 0.0),
+            # 벨트 장력(N). T1 = N(앞)쪽, T2 = S(뒤)쪽. 관성으로 화물이 벨트를 당기면 오른다
+            "t1": 12 * tight - (8 if slipped else 0) + 10 * abs(ax),
+            "t2": 11 * tight + 10 * abs(ay),
         }
 
 
@@ -113,7 +122,7 @@ class SimHX711Bus:
             time.sleep(wait)
         t_ns = time.monotonic_ns()
         self._next = max(self._next + self.period, time.monotonic())
-        g = self._grams(self.scn.at())
+        g = self._grams(self.scn.at(LOAD_LAG))
         vals = [int(round(self.offset[l] + g.get(l, 0.0) / self.scale[l]
                           + self.rng.gauss(0, NOISE_COUNTS)))
                 for l in self.labels]
@@ -123,12 +132,12 @@ class SimHX711Bus:
     def _grams(self, st):
         g = {}
         if self.corners:                                # 네 모서리에 하중을 나눈다
-            x, y = st["x"], st["y"]
+            x, y, m = st["x"], st["y"], st["load_g"]
             fl, fr, rl, rr = self.corners
-            g[fl] = CARGO_G * (1 - x) * (1 - y)
-            g[fr] = CARGO_G * x * (1 - y)
-            g[rl] = CARGO_G * (1 - x) * y
-            g[rr] = CARGO_G * x * y
+            g[fl] = m * (1 - x) * (1 - y)
+            g[fr] = m * x * (1 - y)
+            g[rl] = m * (1 - x) * y
+            g[rr] = m * x * y
         for i, l in enumerate(self.tension):
             g[l] = (st["t1"] if i == 0 else st["t2"]) / G_TO_N
         return g

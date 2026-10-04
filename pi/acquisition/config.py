@@ -25,6 +25,29 @@ HX711
                앞왼,앞오,뒤왼,뒤오 순서                  기본 FL,FR,RL,RR
   BED_L        앞왼-앞오 셀 사이 거리(mm)  } 둘 다 주면 무게중심을 mm 로,
   BED_W        앞왼-뒤왼 셀 사이 거리(mm)  } 안 주면 % 로 적는다 (50 = 가운데)
+               HX_TENSION 순서가 곧 벨트 위치다: 첫 번째 = N(앞)쪽 벨트, 두 번째 = S(뒤)쪽 벨트.
+               N쪽 벨트는 앞쪽 두 셀(COG_CORNERS 1·2번), S쪽은 뒤쪽 두 셀(3·4번) 무게로 장력 하한을 정한다.
+               벨트가 하나뿐이면 네 셀 전부
+
+판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 위험 3단계
+  LOAD_MAX_KG  최대 적재(kg). 넘으면 위험, 90% 를 넘으면 주의   기본 15
+  COG_WARN     무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
+  COG_DANGER   같은 방식으로 위험                                기본 15
+               (기본값이면 가운데 50% = 정상, 그 바깥 10% = 주의, 가장자리 15% = 위험)
+  COG_RESID    IMU 로 예측한 무게중심과 실측의 차 허용(셀 간격 %).
+               넘으면 주의, 2배를 넘으면 위험 (가감속으로 설명 안 되는 변화 = 화물 이동)  기본 10
+  COG_LAG      로드셀이 IMU 보다 늦는 시간(초)                  기본 0.2
+  COG_H        무게중심 높이 h 의 시작값(mm). 주행 중 가감속 데이터로 고쳐 나간다.
+               BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 220
+               (2026-10-03 급출발 기록에서 맞춘 k = 56.6 %/G x BED_W 392mm)
+  JUDGE_IMU    하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
+  TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
+  TENSION_MU   화물-바닥 마찰계수                                기본 0.4
+  TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
+               장력 하한(N) = 그쪽 무게(kg) x g(A - MU) / (2 MU sin ANGLE)   (EN 12195-1 위로 감기)
+               이보다 낮으면 주의, 절반보다 낮으면 위험
+  TENSION_FLOOR 장력 하한의 최솟값(N). 화물이 가벼워도 벨트는 이만큼은 팽팽해야 한다  기본 2
+  TENSION_MAX  장력 상한(N). 넘으면 주의 (과조임 · 셀 한계)     기본 80
 
 MPU-6050
   IMU_BUS      I2C 버스 번호                             기본 1
@@ -54,9 +77,11 @@ MPU-6050
   # 모듈별 SCK (4모서리)
   HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/log_sync.py
 """
+import math
 import os
 import time
 
+G = 9.80665     # m/s^2
 
 def _str(name, default):
     v = os.environ.get(name)
@@ -116,6 +141,20 @@ class Config:
         self.imu_hz = _int("IMU_HZ", 100)
         self.imu_cal = _str("IMU_CAL", "")
 
+        # --- 판정 · 위험도 -----------------------------------------------
+        self.load_max_kg = _float("LOAD_MAX_KG", 15)
+        self.cog_warn = _float("COG_WARN", 25)
+        self.cog_danger = _float("COG_DANGER", 15)
+        self.cog_resid = _float("COG_RESID", 10)
+        self.cog_lag = _float("COG_LAG", 0.2)
+        self.cog_h = _float("COG_H", 220) or None
+        self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
+        self.tension_a = _float("TENSION_A", 0.5)
+        self.tension_mu = _float("TENSION_MU", 0.4)
+        self.tension_angle = _float("TENSION_ANGLE", 90)
+        self.tension_floor = _float("TENSION_FLOOR", 2)
+        self.tension_max = _float("TENSION_MAX", 80)
+
         # --- 카메라 ------------------------------------------------------
         self.cam_port = _int("CAM_PORT", 5006)
 
@@ -171,6 +210,23 @@ class Config:
             raise SystemExit("BED_L 과 BED_W 는 둘 다 주거나 둘 다 비운다")
         if self.bed_l is not None and (self.bed_l < 0 or self.bed_w < 0):
             raise SystemExit("BED_L / BED_W 는 양수(mm)")
+        if self.load_max_kg <= 0:
+            raise SystemExit("LOAD_MAX_KG 는 양수(kg)")
+        if not 0 <= self.cog_danger < self.cog_warn < 50:
+            raise SystemExit("0 <= COG_DANGER < COG_WARN < 50 (가장자리에서 셀 간격 %%): %g, %g"
+                             % (self.cog_danger, self.cog_warn))
+        if self.cog_resid <= 0 or self.cog_lag < 0:
+            raise SystemExit("COG_RESID 는 양수(%), COG_LAG 는 0 이상(초)")
+        if self.cog_h is not None and self.cog_h < 0:
+            raise SystemExit("COG_H 는 양수(mm). 0 이면 시작값 없이 데이터로만 추정")
+        if self.judge_imu and self.judge_imu not in self.imu_labels:
+            raise SystemExit("JUDGE_IMU=%s 가 IMU 라벨 %r 에 없다" % (self.judge_imu, self.imu_labels))
+        if self.tension_mu <= 0 or self.tension_a < 0:
+            raise SystemExit("TENSION_MU 는 양수, TENSION_A 는 0 이상(G)")
+        if not 0 < self.tension_angle <= 90:
+            raise SystemExit("TENSION_ANGLE 은 0 초과 90 이하(°)")
+        if not 0 <= self.tension_floor < self.tension_max:
+            raise SystemExit("0 <= TENSION_FLOOR < TENSION_MAX (N)")
 
     def roles(self, labels=None):
         """(하중 라벨, 장력 라벨, 무게중심 모서리 4개 또는 None).
@@ -180,6 +236,20 @@ class Config:
         weight = [l for l in labels if l not in self.hx_tension]
         corners = self.cog_corners if all(c in weight for c in self.cog_corners) else None
         return weight, tension, corners
+
+    def belt_sides(self):
+        """{장력 라벨: 그 벨트가 잡는 쪽의 바닥 셀들}. HX_TENSION 순서대로 N(앞)쪽, S(뒤)쪽.
+        벨트가 하나뿐이거나 세 번째부터는 네 셀 전부. 모서리를 모르면 바닥 셀 전부."""
+        weight, tension, corners = self.roles()
+        if not corners:
+            return {t: list(weight) for t in tension}
+        sides = [list(corners[:2]), list(corners[2:])] if len(tension) > 1 else []
+        return {t: sides[i] if i < len(sides) else list(corners) for i, t in enumerate(tension)}
+
+    def tension_per_kg(self):
+        """화물 1kg 을 붙잡는 데 드는 벨트 장력(N). 마찰만으로 버티면(A <= MU) 0."""
+        s = math.sin(math.radians(self.tension_angle))
+        return max(0.0, G * (self.tension_a - self.tension_mu) / (2 * self.tension_mu * s))
 
     def as_dict(self):
         return {
@@ -238,6 +308,25 @@ class Config:
                ("%.0f초" % self.log_seconds) if self.log_seconds else "Ctrl+C 까지")
         )
 
+    def describe_judge(self):
+        """pipeline.py 판정 기준 한눈에."""
+        _, _, corners = self.roles()
+        lines = ["판정   최대 적재 %gkg (90%% 넘으면 주의)" % self.load_max_kg]
+        if corners:
+            lines.append("       무게중심  가장자리에서 %g%% 안 = 주의, %g%% 안 = 위험" % (self.cog_warn, self.cog_danger))
+            lines.append("       화물 이동  IMU(%s) 예측과 차 %g%% 넘으면 주의, %g%% 넘으면 위험 "
+                         "(지연 %.1fs, h 시작 %s)" % (
+                             self.judge_imu or "없음", self.cog_resid, 2 * self.cog_resid, self.cog_lag,
+                             "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
+        sides = self.belt_sides()
+        if sides:
+            lines.append("       장력 하한 = 쪽 무게 x %.2f N/kg (최소 %gN, 상한 %gN)  %s" % (
+                self.tension_per_kg(), self.tension_floor, self.tension_max,
+                "  ".join("%s=%s" % (t, "+".join(c)) for t, c in sides.items())))
+        return "\n".join(lines)
+
 
 if __name__ == "__main__":
-    print(Config().describe())
+    cfg = Config()
+    print(cfg.describe())
+    print(cfg.describe_judge())
