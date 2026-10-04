@@ -5,4 +5,7 @@ export HX_LABELS=c1,SW,SE,NW,NE
 export HX_PULL=none
 export HX_TENSION=c1
 export COG_CORNERS=NW,NE,SW,SE
+# 판 쪽 볼트 구멍 사이 거리(mm, 2026-10-04 실측). NW-NE 25cm, NW-SW 39.2cm
+export BED_L=250
+export BED_W=392
 export HX_INVERT=SW
