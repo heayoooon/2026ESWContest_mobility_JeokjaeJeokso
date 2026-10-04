@@ -10,7 +10,8 @@
 ```
 sensors/ ──▶ acquisition/source.py ──Frame──▶ analysis/analyzer.py ──Result──▶ acquisition/log_xlsx.py
  드라이버       FrameSource.frames()   (~10Hz)   Analyzer(cfg)(frame)              CSV / 엑셀
-                                                 (cog.py: 총하중 · 무게중심)       sink.write(frame, result)
+                                                 총하중 · 무게중심 + 판정 4개      sink.write(frame, result)
+                                                 -> 위험도 정상/주의/위험          (판정 열 + '판정' 시트)
 
 twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로세스) ──▶ <이름>_camera 엑셀
  D435i 높이맵 + 요약 (~15-30fps)  패킷 하나 = 한 행. 경과(초) 0 이 센서 엑셀과 같다
@@ -33,6 +34,12 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 |---|---|
 | `total_g` | 바닥 셀 합(g). 하나라도 값이 없으면 `None` |
 | `cog` | `CoG(x, y, unit)`. 앞왼 셀 원점, `unit` 은 `"mm"`(BED_L/BED_W 있을 때) 또는 `"%"`. 모서리 값이 없거나 100 g 미만이면 `None` |
+| `load_kg` | 적재 무게(kg). 셀 합을 IMU `az` 로 나눠 위아래 출렁임을 빼고 평활 |
+| `transfer` | `Transfer(pred_x, pred_y, kx, ky)` — IMU 로 예측한 무게중심과 추정한 하중 이동 계수. mm 단위면 `k` 가 곧 무게중심 높이 h(mm) |
+| `tension_min` | `{장력 라벨: N}` 그 벨트 쪽 무게로 정한 장력 하한 |
+| `checks` | `[Check(key, name, level, text)]` 판정마다 하나. `level` 0 정상 · 1 주의 · 2 위험 · `None` 판정 불가 |
+| `level` | 전체 위험도 = `checks` 중 가장 높은 것 |
+| `changed` | `[(Check, 이전 레벨)]` 이번 프레임에 알림 레벨이 바뀐 판정 (화면 알림 · 엑셀 '판정' 시트) |
 
 - 키는 설정(`HX_LABELS`, `IMU_LABELS`, `HX_TENSION`)으로 고정된다. 응답 없는 센서 · 보정 없는 채널은 값이 `None`.
 - `analysis/` 와 기록 쪽은 `Frame` 만 보고 드라이버를 모른다. 실측과 `--sim` 이 같은 코드로 돈다.
@@ -43,10 +50,42 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 |---|---|---|
 | `sensors/` | ① 센서 값 받기 | 드라이버만. 값을 읽는 순간 `CLOCK_MONOTONIC` 으로 시각을 찍어 `(t_ns, 값)` 을 돌려준다 |
 | `acquisition/` | ② 수집 · 정렬 · 기록 | 설정(`config.py`, `env.sh`), 프레임(`frame.py`, `source.py`), 기록(`log_xlsx.py` 엑셀, `log_sync.py` raw CSV). 자세한 건 [acquisition/README.md](acquisition/README.md) |
-| `analysis/` | ③ 판정 | `analyzer.py` 입구(`Frame` → `Result`), `cog.py` 총하중 · 무게중심 |
+| `analysis/` | ③ 판정 | `analyzer.py` 입구(`Frame` → `Result`), `cog.py` 총하중 · 무게중심 · 구역, `load.py` 적재, `transfer.py` h 추정 · 화물 이동, `tension.py` 장력, `risk.py` 위험도 공통 ([아래](#판정--위험도-analysis)) |
 | `calibration/` | 보정 | 로드셀 `calibrate.py` → `calib.json`, IMU `imu_calibrate.py` → `imu_cal.json` |
 | `tools/` | 점검 · 진단 | 배선 확인, IMU 실시간 각도, I2C 진단. 평소엔 안 쓴다 |
 | `twin/` | 디지털트윈 (D435i) | 깊이 프레임 → 2.5D 높이맵 → UDP. `acquisition/` 과 **별도 프로세스** |
+
+## 판정 · 위험도 (`analysis/`)
+
+프레임마다 판정 4개를 하고 각각 **정상 / 주의 / 위험** 을 낸다. 전체 위험도는 그중 가장 높은 것이다.
+기준값은 전부 환경변수다 (`acquisition/config.py` 머리말, `python3 acquisition/config.py` 로 확인).
+
+| 판정 | 파일 | 주의 | 위험 |
+|---|---|---|---|
+| 적재 | `load.py` | `LOAD_MAX_KG`(15kg) 의 90% 넘음 | 15kg 넘음 |
+| 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_WARN`(25%) 안 | `COG_DANGER`(15%) 안 |
+| 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 셀 간격 `COG_RESID`(10%) 넘음 | 2배(20%) 넘음 |
+| 장력 `<라벨>` | `tension.py` | 그쪽 무게로 정한 하한보다 낮음 / `TENSION_MAX`(80N) 넘음 | 하한의 절반보다 낮음 |
+
+- **적재**: 셀 합을 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다. 화물이 넘어지며 벨트를 당길 때처럼 1~2초 튀는
+  값에는 안 뜨게 2초 이어져야 알린다.
+- **화물 이동** (주행 중 h 추론 → IMU 로 무게중심 변화가 맞는지): 가속도 a(G)로 달리면 무게중심이 h × a 만큼 옮겨진다.
+  `X = X0 + kx·(ay − ay0)`, `Y = Y0 + ky·(ax − ax0)` (IMU 는 `COG_LAG` 0.2초 전 값, mm 단위면 k = h).
+  가감속이 0.08G 넘는 프레임마다 원점을 지나는 직선을 맞춰 k(=h)를 고쳐 나가고(2026-10-03 급출발에서 k 를 맞춘 방법),
+  시작값은 `COG_H`(220mm). 예측과 실측의 차가 크면 가감속으로 설명이 안 되는 변화 = 화물이 미끄러지거나 떨어진 것이다.
+  화물이 새 자리에서 3초 조용히 있으면 그 자리를 새 기준으로 받아들인다.
+- **장력**: `HX_TENSION` 순서대로 첫 번째 = N(앞)쪽 벨트 → 앞쪽 두 셀 무게, 두 번째 = S(뒤)쪽 벨트 → 뒤쪽 두 셀 무게.
+  하한 = 그쪽 무게 × g(`TENSION_A` − `TENSION_MU`) / (2 `TENSION_MU` sin`TENSION_ANGLE`) (EN 12195-1, 최소 `TENSION_FLOOR`).
+  기본값(0.5G, μ 0.4, 90°)이면 1.23 N/kg. 벨트가 하나뿐이면 네 셀 전부의 무게로 정한다.
+- 알림: 화면 상태줄 맨 앞에 `[위험 장력 T1 / 주의 무게중심]` 처럼 나오고, 판정 하나의 레벨이 바뀔 때마다 한 줄씩 찍힌다.
+  엑셀에는 판정 열(노란 머리글: 적재 무게, 예측 무게중심, h, 장력 하한, 위험도, 판정별 레벨, 위험 내용),
+  요약 시트에 판정 기준 · 위험도별 행 수, `판정` 시트에 레벨이 바뀐 순간이 남는다.
+- 한 프레임만 튀는 값에 알림이 깜빡이지 않게 판정마다 정해진 시간만큼 이어져야 올리고, 풀린 뒤에도 몇 초 붙잡아 둔다
+  (`analyzer.py` `HOLD`).
+
+2026-10-03 실측 기록 4개를 그대로 넣어 보면 화물떨어짐은 4.4초에 화물 이동 위험, 7.1초에 무게중심 위험이 뜨고,
+정속 · 급출발 · 우회전에서는 화물 이동이 안 뜬다. 그때 화물이 13~16kg 이라 급출발 · 우회전은 과적(15kg)으로 뜬다.
+장력은 그때 벨트 c1 하나(3.7~10N)가 하한(16~19N)보다 한참 낮아 계속 위험이다 — 실제 마찰계수로 `TENSION_MU` 를 맞출 것.
 
 ## sensors/
 

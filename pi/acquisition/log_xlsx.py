@@ -18,8 +18,12 @@ import os
 import time
 
 from acquisition.console import say, text_width
+from analysis.analyzer import check_list
+from analysis.risk import CAUTION, DANGER, OK
+from analysis.risk import name as risk_name
 
 FLUSH_EVERY = 1.0           # CSV 를 디스크까지 내리는 주기(초)
+MAX_EVENTS = 5000           # '판정' 시트에 적는 알림 변화 수 한계
 EXCEL_MAX_ROWS = 1048576    # 엑셀 시트 하나의 행 한계
 TIME_FMT = "%Y-%m-%d %H:%M:%S.%f"
 PIP_HINT = "pip install openpyxl   (파이: sudo apt install python3-openpyxl)"
@@ -55,6 +59,7 @@ class XlsxSink:
             say("! openpyxl 이 없다 -> 끝나고 엑셀은 못 만들고 CSV 만 남는다.\n  %s\n" % PIP_HINT)
 
         self.weight, self.tension, self.corners = cfg.roles()
+        self.checks = check_list(cfg)
         unit = "mm" if cfg.bed_l else "pct"
         cols = ["time", "t_s"]
         cols += ["%s_g" % l for l in self.weight]
@@ -63,6 +68,16 @@ class XlsxSink:
         if self.corners:
             cols += ["cog_x_" + unit, "cog_y_" + unit]
         cols += ["%s_N" % l for l in self.tension]
+        # 판정 (analysis/analyzer.py)
+        if self.weight:
+            cols.append("load_kg")
+        if self.corners:
+            h = ("h_%s_mm" if cfg.bed_l else "k_%s_pct")
+            cols += ["cog_pred_x_" + unit, "cog_pred_y_" + unit, h % "y", h % "x"]
+        cols += ["%s_min_N" % l for l in self.tension]
+        cols.append("risk")
+        cols += ["lv_" + k for k, _ in self.checks]
+        cols.append("risk_text")
         for l in cfg.imu_labels:
             cols += ["%s_%s" % (l, name) for _, name, _ in IMU_COLS]
         cols += ["%s_raw" % l for l in cfg.hx_labels]
@@ -75,6 +90,9 @@ class XlsxSink:
         self.rows = self.flagged = 0
         self.first_t = self.last_t = None
         self.last_flush = 0.0
+        self.level_rows = {None: 0, OK: 0, CAUTION: 0, DANGER: 0}      # 전체 위험도별 행 수
+        self.check_rows = {k: [0, 0] for k, _ in self.checks}         # 판정별 [주의, 위험] 행 수
+        self.events = []                        # 알림 레벨이 바뀐 순간 (엑셀 '판정' 시트)
 
     def row(self, frame, result):
         """Frame + Result -> CSV 한 행 (self.cols 순서)."""
@@ -87,6 +105,20 @@ class XlsxSink:
         if self.corners:
             out += [round(c.x, 1), round(c.y, 1)] if c else [None, None]
         out += [_round(frame.tension_n[l], 2) for l in self.tension]
+        if self.weight:
+            out.append(_round(result.load_kg, 3))
+        if self.corners:
+            tr = result.transfer
+            if tr:
+                out += [round(tr.pred_x, 1), round(tr.pred_y, 1)]
+                out += [None if k is None else round(abs(k), 1) for k in (tr.ky, tr.kx)]
+            else:
+                out += [None] * 4
+        out += [_round(result.tension_min.get(l), 2) for l in self.tension]
+        out.append(result.level)
+        out += [ch.level for ch in result.checks]
+        out.append(" | ".join("%s %s: %s" % (risk_name(ch.level), ch.name, ch.text)
+                              for ch in result.checks if ch.level))
         for l in cfg.imu_labels:
             r = frame.imu[l]
             if r is None:
@@ -103,6 +135,14 @@ class XlsxSink:
         self.rows += 1
         if row[-1]:
             self.flagged += 1
+        self.level_rows[result.level] += 1
+        for ch in result.checks:
+            if ch.level:
+                self.check_rows[ch.key][ch.level - 1] += 1
+        for ch, old in result.changed:
+            if len(self.events) < MAX_EVENTS:
+                self.events.append((stamp(frame.wall), round(frame.t_s, 1), ch.name,
+                                    risk_name(old), risk_name(ch.level), ch.text))
         if self.first_t is None:
             self.first_t = frame.t_s
         self.last_t = frame.t_s
@@ -146,10 +186,11 @@ class XlsxSink:
                 ic = src.imu_cal[l]
                 desc = ("up %s" % ic.get("up", "+z")) if ic else "보정 없음"
             info.append(("  " + l, "%s · %s" % (loc, desc)))
+        info += self.judge_info()
 
         if self.has_xlsx:
             say("엑셀 만드는 중... (%d행)" % self.rows)
-            build_xlsx(self.csv_path, self.xlsx_path, info, notes)
+            build_xlsx(self.csv_path, self.xlsx_path, info, notes, extra=self.events_sheet)
             say("엑셀: %s" % self.xlsx_path)
         else:
             say("! openpyxl 이 없어 엑셀은 못 만들었다. CSV 는 엑셀로 바로 열린다.\n  %s" % PIP_HINT)
@@ -158,7 +199,34 @@ class XlsxSink:
             % (self.rows, span, (self.rows - 1) / span if span > 0 else 0, src.timeouts, self.flagged))
         if src.timeouts or self.flagged:
             say("! 의심 행이 있다 (flags 열). sck_high 가 많으면 sudo -E 로 돌려볼 것.")
+        lv = self.level_rows
+        say("위험도  정상 %d  주의 %d  위험 %d  판정 불가 %d (행)  알림 변화 %d번"
+            % (lv[OK], lv[CAUTION], lv[DANGER], lv[None], len(self.events)))
         return self.rows
+
+    def judge_info(self):
+        """요약 시트용: 판정 기준과 위험도별 행 수."""
+        lv = self.level_rows
+        info = [("", "")]
+        for i, line in enumerate(self.cfg.describe_judge().splitlines()):
+            info.append(("판정 기준" if i == 0 else "", line.replace("판정", "", 1).strip()))
+        info.append(("위험도별 행 수", "정상 %d · 주의 %d · 위험 %d · 판정 불가 %d"
+                     % (lv[OK], lv[CAUTION], lv[DANGER], lv[None])))
+        for k, nm in self.checks:
+            warn, danger = self.check_rows[k]
+            info.append(("  " + nm, "주의 %d행 · 위험 %d행" % (warn, danger)))
+        info.append(("알림 변화", "%d번 ('판정' 시트)%s" % (
+            len(self.events), " · %d번에서 끊음" % MAX_EVENTS if len(self.events) >= MAX_EVENTS else "")))
+        return info
+
+    def events_sheet(self, wb, head_cell):
+        """'판정' 시트: 판정별 알림 레벨이 바뀐 순간."""
+        ws = wb.create_sheet("판정")
+        for col, width in zip("ABCDEF", (24, 10, 12, 8, 8, 60)):
+            ws.column_dimensions[col].width = width
+        ws.append([head_cell(ws, t) for t in ("시각", "경과(초)", "판정", "이전", "지금", "내용")])
+        for e in self.events:
+            ws.append(list(e))
 
 
 def channel_info(cfg, live, calib, is_sim):
@@ -187,19 +255,29 @@ def channel_info(cfg, live, calib, is_sim):
 # --------------------------------------------------------------------------
 UNIT = {"g": "g", "N": "N", "G": "G", "dps": "°/s", "deg": "°", "mm": "mm", "pct": "%"}
 FILL = {"time": "E7E6E6", "load": "DDEBF7", "tension": "FCE4D6",
-        "imu": "E2EFDA", "diag": "EDEDED"}
+        "imu": "E2EFDA", "judge": "FFF2CC", "diag": "EDEDED"}
+CHECK_NAMES = {"load": "적재", "cog": "무게중심", "move": "화물 이동"}     # 그 밖의 lv_<라벨> 은 장력
 
 
 def pretty(col):
     """CSV 열 이름 -> 엑셀 머리글."""
-    fixed = {"time": "시각", "t_s": "경과(초)", "total_g": "총하중(g)", "flags": "flags"}
+    fixed = {"time": "시각", "t_s": "경과(초)", "total_g": "총하중(g)", "flags": "flags",
+             "load_kg": "적재 무게(kg)", "risk": "위험도(0정상 1주의 2위험)", "risk_text": "위험 내용",
+             "h_y_mm": "h 앞뒤(mm)", "h_x_mm": "h 좌우(mm)",
+             "k_y_pct": "하중이동 앞뒤(%/G)", "k_x_pct": "하중이동 좌우(%/G)"}
     if col in fixed:
         return fixed[col]
+    if col.startswith("lv_"):
+        return "판정 " + CHECK_NAMES.get(col[3:], "장력 " + col[3:])
     name, _, unit = col.rpartition("_")
     if unit == "raw":
         return name + " raw"
+    if name.startswith("cog_pred_"):
+        return "예측 무게중심 %s(%s)" % (name[9:].upper(), UNIT[unit])
     if name.startswith("cog_"):
         return "무게중심 %s(%s)" % (name[4:].upper(), UNIT[unit])
+    if name.endswith("_min") and unit == "N":
+        return "%s 장력 하한(N)" % name[:-4]
     if unit == "N":
         return "%s 장력(N)" % name
     if unit in UNIT:
@@ -211,6 +289,9 @@ def group(col):
     """머리글 색 묶음."""
     if col in ("time", "t_s"):
         return "time"
+    if col in ("load_kg", "risk", "risk_text") or col.endswith("_min_N") \
+            or col.startswith(("cog_pred_", "h_", "k_", "lv_")):
+        return "judge"
     if col.endswith("_raw") or col == "flags":
         return "diag"
     if col.endswith("_N"):
@@ -273,7 +354,7 @@ def build_xlsx(csv_path, xlsx_path, info=(), notes=(), style=None, extra=None):
         head = next(rd)
         for i, h in enumerate(head, 1):
             ws.column_dimensions[get_column_letter(i)].width = \
-                24 if h == "time" else max(9, text_width(style(h)[0]) + 2)
+                {"time": 24, "risk_text": 60}.get(h) or max(9, text_width(style(h)[0]) + 2)
         ws.freeze_panes = "C2"                  # 머리글 줄과 시각 열 고정
         ws.append([head_cell(ws, *style(h)) for h in head])
 
@@ -343,7 +424,7 @@ def build_xlsx(csv_path, xlsx_path, info=(), notes=(), style=None, extra=None):
     s.append([head_cell(s, t) for t in
               ("항목", "평균", "최소", "최대", "표준편차", "처음", "마지막", "개수")])
     for h, st in zip(head, stats):
-        if h in ("time", "t_s", "seq", "frame_ts") or st.n == 0:
+        if h in ("time", "t_s", "seq", "frame_ts", "risk") or h.startswith("lv_") or st.n == 0:
             continue
         s.append([style(h)[0], round(st.mean, 4), st.min, st.max, round(st.sd, 4),
                   st.first, st.last, st.n])
