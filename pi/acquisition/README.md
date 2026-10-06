@@ -86,13 +86,12 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/l
 | `HX_TENSION` | `T1,T2` | 벨트 장력(인장형) 채널 라벨. 나머지는 바닥 하중 채널 |
 | `COG_CORNERS` | `FL,FR,RL,RR` | 무게중심용 바닥 셀. 앞왼,앞오,뒤왼,뒤오 순서 |
 | `BED_L` / `BED_W` | 없음 | 앞왼-앞오 / 앞왼-뒤왼 셀 간격(mm). 없으면 무게중심을 % 로 |
-| `LOAD_MAX_KG` | `15` | 최대 적재(kg). 넘으면 위험, 90% 넘으면 주의 |
 | `COG_WARN` / `COG_DANGER` | `25` / `15` | 무게중심이 판 가장자리에서 셀 간격의 이 % 안이면 주의 / 위험 |
 | `COG_RESID` | `10` | IMU 예측 무게중심과 실측의 차 허용(셀 간격 %). 넘으면 주의, 2배면 위험 (화물 이동) |
 | `COG_LAG` | `0.2` | 로드셀이 IMU 보다 늦는 시간(초) |
 | `COG_H` | `220` | 무게중심 높이 h 시작값(mm). 주행 중 데이터로 고쳐 나간다 |
 | `JUDGE_IMU` | IMU 첫 번째 | 하중 이동 예측 · 무게 보정에 쓸 차체 IMU |
-| `TENSION_A` / `TENSION_MU` / `TENSION_ANGLE` | `0.5` / `0.4` / `90` | 장력 하한 = 그쪽 무게 × g(A−μ)/(2μ sinα). `HX_TENSION` 첫 번째 = N쪽(앞 두 셀), 두 번째 = S쪽(뒤 두 셀) |
+| `TENSION_A` / `TENSION_MU` / `TENSION_ANGLE` | `0.5` / `0.4` / `90` | 장력 하한 = 그쪽 무게 × g(A−μ)/(2μ sinα). `HX_TENSION` 첫 번째 = N쪽(앞 두 셀), 두 번째 = S쪽(뒤 두 셀). 벨트 누름(장력 × 2 sinα)을 셀 합에서 뺄 때도 α 를 쓴다 |
 | `TENSION_FLOOR` / `TENSION_MAX` | `2` / `80` | 장력 하한의 최솟값 / 상한(N) |
 | `IMU_BUS` | `1` | I2C 버스 |
 | `IMU_ADDRS` | `0x68` | 파이 I2C 에 직접 물린 센서 주소 |

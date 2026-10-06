@@ -1,7 +1,8 @@
 """판정 단계의 입구: Frame 하나 -> Result 하나. 판정은 pi 에서 하고 display 는 결과를 그린다.
 
-판정 4개, 각각 정상 / 주의 / 위험 (analysis/risk.py). 기준값은 환경변수 (acquisition/config.py)
-    적재        총하중 -> 최대 적재 LOAD_MAX_KG                          load.py
+판정 4개 (analysis/risk.py). 적재는 정상 / 주의 / 경고 / 위험, 나머지는 정상 / 주의 / 위험.
+기준값은 환경변수 (acquisition/config.py), 적재만 total.py 맨 위 상수
+    적재        셀 합에서 벨트 누름을 뺀 화물 무게 -> 적정 적재중량의 %      total.py
     무게중심    판 가장자리에 얼마나 붙었나 COG_WARN / COG_DANGER         cog.py zone()
     화물 이동   주행 중 h 를 추정해 IMU 로 무게중심 변화를 예측, 실측과 비교  transfer.py
     장력 <라벨> N쪽 · S쪽 무게로 정한 장력 하한과 비교                    tension.py
@@ -14,9 +15,9 @@
 from dataclasses import dataclass
 
 from analysis.cog import CoG, cog, total_load, zone
-from analysis.load import LoadCheck
 from analysis.risk import Hold
 from analysis.tension import TensionCheck
+from analysis.total import TotalLoadCheck
 from analysis.transfer import Transfer, TransferCheck
 
 # 판정별 (on_s, hold_s): 이만큼 이어져야 알리고, 풀린 뒤에도 이만큼 알림을 유지한다
@@ -37,7 +38,8 @@ def check_list(cfg):
 class Result:
     total_g: float | None       # 바닥 셀 합. 하나라도 값이 없으면 None
     cog: CoG | None             # 무게중심. 모서리 값이 없거나 하중이 작으면 None
-    load_kg: float | None       # 적재 무게. 셀 합을 IMU az 로 나눠 위아래 출렁임을 빼고 평활
+    load_kg: float | None       # 적재 무게 = 셀 합에서 벨트 누름을 뺀 화물 무게. IMU az 로 나누고 평활
+    measured_kg: float | None   # 측정 무게 = 셀 합 그대로 (벨트 누름 포함). az 로 나누고 평활
     transfer: Transfer | None   # IMU 로 예측한 무게중심 + 추정한 하중 이동 계수(h)
     tension_min: dict           # {장력 라벨: 그쪽 무게로 정한 장력 하한 N | None}
     checks: list                # [Check] Analyzer.checks 순서. 판정 못 하면 level None
@@ -51,7 +53,7 @@ class Analyzer:
         self.bed = (cfg.bed_l, cfg.bed_w) if cfg.bed_l else None
         self.imu = cfg.judge_imu or None
         self.zone = (cfg.cog_warn, cfg.cog_danger)
-        self.load = LoadCheck(cfg.load_max_kg)
+        self.load = TotalLoadCheck(cfg)
         self.transfer = TransferCheck(cfg, self.bed) if self.corners else None
         self.tension = TensionCheck(cfg)
         self.checks = check_list(cfg)
@@ -64,7 +66,7 @@ class Analyzer:
         total = total_load(frame)
         c = cog(frame, self.corners, self.bed)
 
-        load_kg, check = self.load(t, total, imu)
+        load_kg, measured_kg, check = self.load(t, frame, imu)
         checks = [check]
         tr = None
         if self.corners:
@@ -83,5 +85,5 @@ class Analyzer:
                 changed.append((ch, old))
             self.last[ch.key] = ch.level
         level = max((ch.level for ch in checks if ch.level is not None), default=None)
-        return Result(total_g=total, cog=c, load_kg=load_kg, transfer=tr, tension_min=mins,
-                      checks=checks, level=level, changed=changed)
+        return Result(total_g=total, cog=c, load_kg=load_kg, measured_kg=measured_kg, transfer=tr,
+                      tension_min=mins, checks=checks, level=level, changed=changed)

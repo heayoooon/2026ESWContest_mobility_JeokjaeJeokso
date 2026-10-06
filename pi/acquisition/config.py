@@ -29,8 +29,8 @@ HX711
                N쪽 벨트는 앞쪽 두 셀(COG_CORNERS 1·2번), S쪽은 뒤쪽 두 셀(3·4번) 무게로 장력 하한을 정한다.
                벨트가 하나뿐이면 네 셀 전부
 
-판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 위험 3단계
-  LOAD_MAX_KG  최대 적재(kg). 넘으면 위험, 90% 를 넘으면 주의   기본 15
+판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (경고는 아직 적재만 쓴다)
+  적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
   COG_WARN     무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
   COG_DANGER   같은 방식으로 위험                                기본 15
                (기본값이면 가운데 50% = 정상, 그 바깥 10% = 주의, 가장자리 15% = 위험)
@@ -46,6 +46,8 @@ HX711
   TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
                장력 하한(N) = 그쪽 무게(kg) x g(A - MU) / (2 MU sin ANGLE)   (EN 12195-1 위로 감기)
                이보다 낮으면 주의, 절반보다 낮으면 위험
+               벨트가 화물을 누르는 힘(장력 x 2 sin ANGLE)은 바닥 셀에 더해지므로 적재 무게 ·
+               장력 하한을 낼 때 빼는 데도 이 각을 쓴다
   TENSION_FLOOR 장력 하한의 최솟값(N). 화물이 가벼워도 벨트는 이만큼은 팽팽해야 한다  기본 2
   TENSION_MAX  장력 상한(N). 넘으면 주의 (과조임 · 셀 한계)     기본 80
 
@@ -142,7 +144,6 @@ class Config:
         self.imu_cal = _str("IMU_CAL", "")
 
         # --- 판정 · 위험도 -----------------------------------------------
-        self.load_max_kg = _float("LOAD_MAX_KG", 15)
         self.cog_warn = _float("COG_WARN", 25)
         self.cog_danger = _float("COG_DANGER", 15)
         self.cog_resid = _float("COG_RESID", 10)
@@ -210,8 +211,6 @@ class Config:
             raise SystemExit("BED_L 과 BED_W 는 둘 다 주거나 둘 다 비운다")
         if self.bed_l is not None and (self.bed_l < 0 or self.bed_w < 0):
             raise SystemExit("BED_L / BED_W 는 양수(mm)")
-        if self.load_max_kg <= 0:
-            raise SystemExit("LOAD_MAX_KG 는 양수(kg)")
         if not 0 <= self.cog_danger < self.cog_warn < 50:
             raise SystemExit("0 <= COG_DANGER < COG_WARN < 50 (가장자리에서 셀 간격 %%): %g, %g"
                              % (self.cog_danger, self.cog_warn))
@@ -250,6 +249,11 @@ class Config:
         """화물 1kg 을 붙잡는 데 드는 벨트 장력(N). 마찰만으로 버티면(A <= MU) 0."""
         s = math.sin(math.radians(self.tension_angle))
         return max(0.0, G * (self.tension_a - self.tension_mu) / (2 * self.tension_mu * s))
+
+    def belt_push_g_per_n(self):
+        """벨트 장력 1N 이 바닥 셀 합에 더하는 무게(g). 화물 위로 감은 벨트는 양쪽 끈이
+        2 T sin ANGLE 로 화물을 바닥 쪽으로 누른다 (2026-10-04 기록에서 맞춘 계수 1.96 ~ 이론 2)."""
+        return 2 * math.sin(math.radians(self.tension_angle)) / G * 1000
 
     def as_dict(self):
         return {
@@ -310,8 +314,10 @@ class Config:
 
     def describe_judge(self):
         """pipeline.py 판정 기준 한눈에."""
+        from analysis import total              # 적재 기준은 환경변수가 아니라 total.py 상수
         _, _, corners = self.roles()
-        lines = ["판정   최대 적재 %gkg (90%% 넘으면 주의)" % self.load_max_kg]
+        lines = ["판정   적재  적정 %gkg 의 %d%% 넘으면 주의, %d%% 경고, %d%% 위험 (셀 합에서 장력 1N 당 %.0fg 뺌)" % (
+            total.RATED_KG, total.CAUTION_PCT, total.WARNING_PCT, total.DANGER_PCT, self.belt_push_g_per_n())]
         if corners:
             lines.append("       무게중심  가장자리에서 %g%% 안 = 주의, %g%% 안 = 위험" % (self.cog_warn, self.cog_danger))
             lines.append("       화물 이동  IMU(%s) 예측과 차 %g%% 넘으면 주의, %g%% 넘으면 위험 "
@@ -320,13 +326,15 @@ class Config:
                              "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
         sides = self.belt_sides()
         if sides:
-            lines.append("       장력 하한 = 쪽 무게 x %.2f N/kg (최소 %gN, 상한 %gN)  %s" % (
+            lines.append("       장력 하한 = 쪽 무게(그 벨트 누름 뺌) x %.2f N/kg (최소 %gN, 상한 %gN)  %s" % (
                 self.tension_per_kg(), self.tension_floor, self.tension_max,
                 "  ".join("%s=%s" % (t, "+".join(c)) for t, c in sides.items())))
         return "\n".join(lines)
 
 
 if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # pi/ (analysis 를 찾게)
     cfg = Config()
     print(cfg.describe())
     print(cfg.describe_judge())

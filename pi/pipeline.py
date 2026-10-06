@@ -6,15 +6,15 @@
     python pipeline.py --sim                 # PC(VS Code). 파이 없이 가짜 센서로
 
     acquisition/source.py     센서 -> Frame (약 10Hz, acquisition/frame.py)
-    analysis/analyzer.py      Frame -> Result (총하중, 무게중심, 판정 4개 -> 위험도 정상/주의/위험)
+    analysis/analyzer.py      Frame -> Result (총하중, 무게중심, 판정 4개 -> 위험도 정상/주의/경고/위험)
     acquisition/log_xlsx.py   Frame + Result -> CSV / 엑셀 (판정 열 + '판정' 시트)
     acquisition/log_camera.py 트윈 노드(D435i) UDP 패킷 -> <이름>_camera 엑셀 (따로, 별도 프로세스)
 
 핀/라벨/역할/판정 기준은 전부 환경변수다 (acquisition/config.py). 예) 바닥 4모서리 + 벨트 2개
     HX_DT=5,6,13,19,26,20 HX_LABELS=FL,FR,RL,RR,T1,T2 python3 pipeline.py
 
-위험도는 화면 맨 앞 [정상]/[주의]/[위험] 으로 보이고, 판정 하나의 알림 레벨이 바뀔 때마다 한 줄씩 찍힌다.
-    적재 (LOAD_MAX_KG) · 무게중심 구역 · 화물 이동 (h 추정 + IMU 예측) · 벨트 장력 (N쪽 / S쪽 무게)
+위험도는 화면 맨 앞 [정상]/[주의]/[경고]/[위험] 으로 보이고, 판정 하나의 알림 레벨이 바뀔 때마다 한 줄씩 찍힌다.
+    적재 (장력 뺀 화물 무게, analysis/total.py) · 무게중심 구역 · 화물 이동 (h 추정 + IMU 예측) · 벨트 장력 (N쪽 / S쪽 무게)
 """
 import os
 import signal
@@ -27,7 +27,7 @@ from acquisition.log_camera import CameraLog
 from acquisition.log_xlsx import XlsxSink
 from acquisition.source import FrameSource
 from analysis.analyzer import Analyzer
-from analysis.risk import CAUTION, DANGER, OK
+from analysis.risk import ALERTS, OK
 from analysis.risk import name as risk_name
 
 STATUS_EVERY = 0.5          # 화면 갱신(초)
@@ -35,11 +35,11 @@ SIM_BED = ("250", "392")    # --sim 에서 BED_L/BED_W 를 안 주면 (env.sh �
 
 
 def risk_head(result):
-    """[위험 장력 T1 / 주의 무게중심] 처럼 레벨별로 어떤 판정이 걸렸는지."""
+    """[위험 장력 T1 / 경고 적재 / 주의 무게중심] 처럼 레벨별로 어떤 판정이 걸렸는지 (높은 레벨부터)."""
     if result.level is None:
         return "[판정 불가]"
     parts = []
-    for lv in (DANGER, CAUTION):
+    for lv in reversed(ALERTS):
         names = [ch.name for ch in result.checks if ch.level == lv]
         if names:
             parts.append("%s %s" % (risk_name(lv), ",".join(names)))
@@ -48,8 +48,8 @@ def risk_head(result):
 
 def status_text(frame, result, cam_rows):
     show = [risk_head(result)]
-    if result.load_kg is not None:
-        show.append("적재 %.1fkg" % result.load_kg)
+    if result.load_kg is not None:              # 장력 뺀 화물 무게 (측정 = 셀 합 그대로)
+        show.append("적재 %.1fkg (측정 %.1fkg)" % (result.load_kg, result.measured_kg))
     elif result.total_g is not None:
         show.append("하중 %.0fg" % result.total_g)
     c = result.cog
