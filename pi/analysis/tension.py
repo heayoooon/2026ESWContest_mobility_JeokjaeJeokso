@@ -33,13 +33,17 @@ class TensionCheck:
             side = None if any(v is None for v in g) else static_g(sum(g), imu) / 1000
             kg = self.side_kg[label](t, side)
             tn = self.tension[label](t, frame.tension_n.get(label))
-            mins[label] = None
             name = "장력 " + label
-            if kg is None or tn is None:
-                checks.append(Check(label, name, None, "값 없음"))
+            # 하한은 그쪽 무게로만 정해진다. 장력 셀 값이 없어도(보정 전) 하한은 낸다
+            need = mins[label] = (max(self.floor, self.per_kg * kg)
+                                  if kg is not None and kg >= SIDE_MIN_KG else None)
+            if kg is None:
+                checks.append(Check(label, name, None, "%s 값 없음" % "+".join(cells)))
+                continue
+            if tn is None:
+                checks.append(Check(label, name, None, "장력 셀 값 없음"))
                 continue
             where = "%s %.1fkg" % ("+".join(cells), kg)
-            need = mins[label] = max(self.floor, self.per_kg * kg) if kg >= SIDE_MIN_KG else None
             if tn > self.max:
                 lv, text = CAUTION, "과조임 %.1fN > 상한 %gN" % (tn, self.max)
             elif need is None:
