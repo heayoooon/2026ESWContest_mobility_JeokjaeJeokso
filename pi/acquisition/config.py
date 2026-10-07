@@ -29,8 +29,9 @@ HX711
                N쪽 벨트는 앞쪽 두 셀(COG_CORNERS 1·2번), S쪽은 뒤쪽 두 셀(3·4번) 무게로 장력 하한을 정한다.
                벨트가 하나뿐이면 네 셀 전부
 
-판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (경고는 아직 적재 · 무게중심만 쓴다)
+판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (판정 4개 다 쓴다)
   적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
+  장력 단계 기준(하한 · 상한의 몇 %, 안전계수 fs)도 analysis/tension.py 맨 위 상수다
   COG_CAUTION  무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
   COG_WARNING  같은 방식으로 경고                                기본 15
   COG_DANGER   같은 방식으로 위험                                기본 7
@@ -52,12 +53,13 @@ HX711
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
   TENSION_MU   화물-바닥 마찰계수                                기본 0.4
   TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
-               장력 하한(N) = 그쪽 무게(kg) x g(A - MU) / (2 MU sin ANGLE)   (EN 12195-1 위로 감기)
-               이보다 낮으면 주의, 절반보다 낮으면 위험
+               장력 하한(N) = 그쪽 무게(kg) x g(A - MU) fs / (2 MU sin ANGLE)   (EN 12195-1 식 10, 위로 감기)
+               하한의 100% 밑 주의, 75% 밑 경고, 50% 밑 위험 (analysis/tension.py)
                벨트가 화물을 누르는 힘(장력 x 2 sin ANGLE)은 바닥 셀에 더해지므로 적재 무게 ·
                장력 하한을 낼 때 빼는 데도 이 각을 쓴다
   TENSION_FLOOR 장력 하한의 최솟값(N). 화물이 가벼워도 벨트는 이만큼은 팽팽해야 한다  기본 2
-  TENSION_MAX  장력 상한(N). 넘으면 주의 (과조임 · 셀 한계)     기본 80
+  TENSION_MAX  장력 상한(N) = 벨트 · 장력 셀이 견디는 힘 (EN 12195-1 의 LC).
+               50% 넘으면 주의(과조임), 75% 경고, 100% 위험         기본 80
 
 MPU-6050
   IMU_BUS      I2C 버스 번호                             기본 1
@@ -258,18 +260,14 @@ class Config:
         return weight, tension, corners
 
     def belt_sides(self):
-        """{장력 라벨: 그 벨트가 잡는 쪽의 바닥 셀들}. HX_TENSION 순서대로 N(앞)쪽, S(뒤)쪽.
-        벨트가 하나뿐이거나 세 번째부터는 네 셀 전부. 모서리를 모르면 바닥 셀 전부."""
+        """{장력 라벨: (쪽 이름, 그 벨트가 맡는 바닥 셀들)}. HX_TENSION 순서대로
+        첫 번째 = ("N", 앞쪽 두 셀), 두 번째 = ("S", 뒤쪽 두 셀).
+        벨트가 하나뿐이거나 세 번째부터는 ("전체", 네 셀 전부). 모서리를 모르면 바닥 셀 전부."""
         weight, tension, corners = self.roles()
         if not corners:
-            return {t: list(weight) for t in tension}
-        sides = [list(corners[:2]), list(corners[2:])] if len(tension) > 1 else []
-        return {t: sides[i] if i < len(sides) else list(corners) for i, t in enumerate(tension)}
-
-    def tension_per_kg(self):
-        """화물 1kg 을 붙잡는 데 드는 벨트 장력(N). 마찰만으로 버티면(A <= MU) 0."""
-        s = math.sin(math.radians(self.tension_angle))
-        return max(0.0, G * (self.tension_a - self.tension_mu) / (2 * self.tension_mu * s))
+            return {t: ("전체", list(weight)) for t in tension}
+        sides = [("N", list(corners[:2])), ("S", list(corners[2:]))] if len(tension) > 1 else []
+        return {t: sides[i] if i < len(sides) else ("전체", list(corners)) for i, t in enumerate(tension)}
 
     def belt_push_g_per_n(self):
         """벨트 장력 1N 이 바닥 셀 합에 더하는 무게(g). 화물 위로 감은 벨트는 양쪽 끈이
@@ -335,7 +333,7 @@ class Config:
 
     def describe_judge(self):
         """pipeline.py 판정 기준 한눈에."""
-        from analysis import total              # 적재 기준은 환경변수가 아니라 total.py 상수
+        from analysis import tension, total     # 적재 · 장력 단계 기준은 환경변수가 아니라 각 파일 맨 위 상수
         _, _, corners = self.roles()
         lines = ["판정   적재  적정 %gkg 의 %d%% 넘으면 주의, %d%% 경고, %d%% 위험 (셀 합에서 장력 1N 당 %.0fg 뺌)" % (
             total.RATED_KG, total.CAUTION_PCT, total.WARNING_PCT, total.DANGER_PCT, self.belt_push_g_per_n())]
@@ -352,9 +350,12 @@ class Config:
                 "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
         sides = self.belt_sides()
         if sides:
-            lines.append("       장력 하한 = 쪽 무게(그 벨트 누름 뺌) x %.2f N/kg (최소 %gN, 상한 %gN)  %s" % (
-                self.tension_per_kg(), self.tension_floor, self.tension_max,
-                "  ".join("%s=%s" % (t, "+".join(c)) for t, c in sides.items())))
+            lines.append("       장력  하한 = 쪽 무게(그 벨트 누름 뺌) x %.2f N/kg (fs %g, 최소 %gN)  %s" % (
+                tension.need_per_kg(self), tension.SAFETY_FACTOR, self.tension_floor,
+                "  ".join("%s쪽 %s=%s" % (side, t, "+".join(c)) for t, (side, c) in sides.items())))
+            lines.append("             하한의 %d%% 밑 주의, %d%% 경고, %d%% 위험 / 상한 %gN 의 %d%% 넘으면 주의, %d%% 경고, %d%% 위험" % (
+                tension.LOW_CAUTION_PCT, tension.LOW_WARNING_PCT, tension.LOW_DANGER_PCT, self.tension_max,
+                tension.HIGH_CAUTION_PCT, tension.HIGH_WARNING_PCT, tension.HIGH_DANGER_PCT))
         return "\n".join(lines)
 
 

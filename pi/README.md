@@ -38,7 +38,7 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 | `measured_kg` | 측정 무게(kg). 셀 합 그대로(벨트 누름 포함), `az` 로 나누고 평활 |
 | `transfer` | `Transfer(pred_x, pred_y, kx, ky)` — IMU 로 예측한 무게중심과 추정한 하중 이동 계수. mm 단위면 `k` 가 곧 무게중심 높이 h(mm) |
 | `tension_min` | `{장력 라벨: N}` 그 벨트 쪽 무게로 정한 장력 하한 |
-| `checks` | `[Check(key, name, level, text)]` 판정마다 하나. `level` 0 정상 · 1 주의 · 2 경고 · 3 위험 · `None` 판정 불가 (경고는 아직 적재만) |
+| `checks` | `[Check(key, name, level, text)]` 판정마다 하나. `level` 0 정상 · 1 주의 · 2 경고 · 3 위험 · `None` 판정 불가 |
 | `level` | 전체 위험도 = `checks` 중 가장 높은 것 |
 | `changed` | `[(Check, 이전 레벨)]` 이번 프레임에 알림 레벨이 바뀐 판정 (화면 알림 · 엑셀 '판정' 시트) |
 
@@ -58,15 +58,15 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 
 ## 판정 · 위험도 (`analysis/`)
 
-프레임마다 판정 4개를 하고 각각 **정상 / 주의 / 위험** 을 낸다 (적재 · 무게중심 · 화물 이동만 **경고** 를 더해 4단계). 전체 위험도는 그중 가장 높은 것이다.
-기준값은 환경변수다 (`acquisition/config.py` 머리말, `python3 acquisition/config.py` 로 확인). 적재 기준만 `analysis/total.py` 맨 위 상수.
+프레임마다 판정 4개를 하고 각각 **정상 / 주의 / 경고 / 위험** 을 낸다. 전체 위험도는 그중 가장 높은 것이다.
+기준값은 환경변수다 (`acquisition/config.py` 머리말, `python3 acquisition/config.py` 로 확인). 적재 · 장력 단계 기준과 화물 이동 허용 배수만 `analysis/total.py` · `analysis/tension.py` · `analysis/transfer.py` 맨 위 상수.
 
-| 판정 | 파일 | 주의 | 위험 |
-|---|---|---|---|
-| 적재 | `total.py` | 적정 `RATED_KG`(10kg) 의 110% 넘음 (125% 넘으면 경고) | 140% 넘음 |
-| 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_CAUTION`(25%) 안 (`COG_WARNING`(15%) 안이면 경고) | `COG_DANGER`(7%) 안 |
-| 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 허용(셀 간격 `COG_RESID`(10%) + `COG_RESID_A`(20%/G) x \|a\|) 넘음, 최근 `MOVE_WIN_S`(1초)의 `MOVE_ALPHA`(60%) 이상 (1.4배면 경고, `MOVE_CONFIRM_S`(1.5초) 이어져도 경고) | 1.8배 넘음 (`MOVE_DANGER_S`(3초) 이어져도 위험) |
-| 장력 `<라벨>` | `tension.py` | 그쪽 무게로 정한 하한보다 낮음 / `TENSION_MAX`(80N) 넘음 | 하한의 절반보다 낮음 |
+| 판정 | 파일 | 주의 | 경고 | 위험 |
+|---|---|---|---|---|
+| 적재 | `total.py` | 적정 `RATED_KG`(10kg) 의 110% 넘음 | 125% 넘음 | 140% 넘음 |
+| 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_CAUTION`(25%) 안 | `COG_WARNING`(15%) 안 | `COG_DANGER`(7%) 안 |
+| 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 허용(셀 간격 `COG_RESID`(10%) + `COG_RESID_A`(20%/G) x \|a\|) 넘음, 최근 `MOVE_WIN_S`(1초)의 `MOVE_ALPHA`(60%) 이상 | 1.4배 넘음 (`MOVE_CONFIRM_S`(1.5초) 이어져도 경고) | 1.8배 넘음 (`MOVE_DANGER_S`(3초) 이어져도 위험) |
+| 장력 N / S | `tension.py` | 하한의 100% 밑 / `TENSION_MAX`(80N) 의 50% 넘음 | 75% 밑 / 75% 넘음 | 50% 밑 / 100% 넘음 |
 
 - **적재**: 셀 합에서 벨트가 화물을 누른 몫(장력 × 2 sin`TENSION_ANGLE`)을 빼고 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다.
   110% = 도로교통법 시행령 제22조 허용 한도, 140% = 도로법 중대 위반(40% 이상 초과). 화물이 넘어지며 벨트를 당길 때처럼 1~2초 튀는
@@ -78,10 +78,14 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
   예측과 실측의 차가 크면 가감속으로 설명이 안 되는 변화 = 화물이 미끄러지거나 떨어진 것이다.
   화물이 새 자리에서 3초 조용히 있으면 그 자리를 새 기준으로 받아들인다.
 - **장력**: `HX_TENSION` 순서대로 첫 번째 = N(앞)쪽 벨트 → 앞쪽 두 셀 무게, 두 번째 = S(뒤)쪽 벨트 → 뒤쪽 두 셀 무게.
-  하한 = 그쪽 무게 × g(`TENSION_A` − `TENSION_MU`) / (2 `TENSION_MU` sin`TENSION_ANGLE`) (EN 12195-1, 최소 `TENSION_FLOOR`).
-  기본값(0.5G, μ 0.4, 90°)이면 1.23 N/kg. 벨트가 하나뿐이면 네 셀 전부의 무게로 정한다.
+  벨트마다 따로 판정해서 화면에는 `장력 N(c1)`, `장력 S(c2)` 로 뜬다.
+  하한 = 그쪽 무게 × g(`TENSION_A` − `TENSION_MU`) fs / (2 `TENSION_MU` sin`TENSION_ANGLE`) (EN 12195-1 식 10,
+  안전계수 fs 1.1, 최소 1kg 당 1N · `TENSION_FLOOR`). 기본값(0.5G, μ 0.4, 90°)이면 1.35 N/kg.
   그쪽 무게에서는 그 벨트가 누른 몫을 빼고 쓴다 (안 빼면 세게 조일수록 하한도 올라간다).
-- 알림: 화면 상태줄 맨 앞에 `[위험 장력 T1 / 경고 적재 / 주의 무게중심]` 처럼 나오고, 판정 하나의 레벨이 바뀔 때마다 한 줄씩 찍힌다.
+  상한 `TENSION_MAX` 는 벨트 · 셀이 견디는 힘(EN 의 LC)이다. 조임 장력은 그 50% 까지라 넘으면 과조임 주의.
+  하한의 100% · 50%, 상한의 50% · 100% 는 근거가 있는 값이고 75% 는 그 사이 가운데다
+  (근거: [`analysis/tension_EN12195-1.md`](analysis/tension_EN12195-1.md)).
+- 알림: 화면 상태줄 맨 앞에 `[위험 장력 N(T1) / 경고 적재 / 주의 무게중심]` 처럼 나오고, 판정 하나의 레벨이 바뀔 때마다 한 줄씩 찍힌다.
   엑셀에는 판정 열(노란 머리글: 적재 무게, 예측 무게중심, h, 장력 하한, 위험도, 판정별 레벨, 위험 내용),
   요약 시트에 판정 기준 · 위험도별 행 수, `판정` 시트에 레벨이 바뀐 순간이 남는다.
 - 한 프레임만 튀는 값에 알림이 깜빡이지 않게 판정마다 정해진 시간만큼 이어져야 올리고, 풀린 뒤에도 몇 초 붙잡아 둔다

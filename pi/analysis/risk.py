@@ -1,7 +1,6 @@
 """위험도 4단계와 판정 하나의 결과. 판정 모듈(total / cog / transfer / tension)이 같이 쓴다.
 
-레벨은 0 정상 · 1 주의 · 2 경고 · 3 위험. 지금 경고(2)까지 쓰는 건 적재(total.py)뿐이고,
-나머지 판정은 예전처럼 정상 / 주의 / 위험(0 · 1 · 3)만 낸다. 이름(CAUTION, DANGER)으로 쓰므로 그대로 맞는다.
+레벨은 0 정상 · 1 주의 · 2 경고 · 3 위험. 판정 4개(적재 · 무게중심 · 화물 이동 · 장력) 모두 4단계를 쓴다.
 
 판정마다 Check 하나를 낸다. 값이 없어 판정을 못 하면 level 이 None 이다.
 한 프레임만 튀고 마는 값에 알림이 깜빡이지 않게 Hold 로 거른다.
@@ -22,7 +21,7 @@ def name(level):
 @dataclass
 class Check:
     key: str            # CSV 열 이름용 (load, cog, move, <장력 라벨>)
-    name: str           # 화면 · 엑셀용 (적재, 무게중심, 화물 이동, 장력 T1)
+    name: str           # 화면 · 엑셀용 (적재, 무게중심, 화물 이동, 장력 N(T1))
     level: int | None   # OK | CAUTION | WARNING | DANGER. 판정 못 하면 None
     text: str           # 이유. 정상이면 지금 값
 

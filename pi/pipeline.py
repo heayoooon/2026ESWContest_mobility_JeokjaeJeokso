@@ -35,7 +35,7 @@ SIM_BED = ("250", "392")    # --sim 에서 BED_L/BED_W 를 안 주면 (env.sh �
 
 
 def risk_head(result):
-    """[위험 장력 T1 / 경고 적재 / 주의 무게중심] 처럼 레벨별로 어떤 판정이 걸렸는지 (높은 레벨부터)."""
+    """[위험 장력 N(T1) / 경고 적재 / 주의 무게중심] 처럼 레벨별로 어떤 판정이 걸렸는지 (높은 레벨부터)."""
     if result.level is None:
         return "[판정 불가]"
     parts = []
