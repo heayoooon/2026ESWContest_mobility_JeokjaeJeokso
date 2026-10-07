@@ -19,7 +19,7 @@ import time
 
 from acquisition.console import say, text_width
 from analysis.analyzer import check_list
-from analysis.risk import CAUTION, DANGER, OK
+from analysis.risk import CAUTION, DANGER, OK, WARNING
 from analysis.risk import name as risk_name
 
 FLUSH_EVERY = 1.0           # CSV 를 디스크까지 내리는 주기(초)
@@ -64,7 +64,7 @@ class XlsxSink:
         cols = ["time", "t_s"]
         cols += ["%s_g" % l for l in self.weight]
         if self.weight:
-            cols.append("total_g")
+            cols += ["total_g", "measured_kg"]
         if self.corners:
             cols += ["cog_x_" + unit, "cog_y_" + unit]
         cols += ["%s_N" % l for l in self.tension]
@@ -90,8 +90,8 @@ class XlsxSink:
         self.rows = self.flagged = 0
         self.first_t = self.last_t = None
         self.last_flush = 0.0
-        self.level_rows = {None: 0, OK: 0, CAUTION: 0, DANGER: 0}      # 전체 위험도별 행 수
-        self.check_rows = {k: [0, 0] for k, _ in self.checks}         # 판정별 [주의, 위험] 행 수
+        self.level_rows = {None: 0, OK: 0, CAUTION: 0, WARNING: 0, DANGER: 0}     # 전체 위험도별 행 수
+        self.check_rows = {k: [0, 0, 0] for k, _ in self.checks}      # 판정별 [주의, 경고, 위험] 행 수
         self.events = []                        # 알림 레벨이 바뀐 순간 (엑셀 '판정' 시트)
 
     def row(self, frame, result):
@@ -101,7 +101,7 @@ class XlsxSink:
         out = [stamp(frame.wall), round(frame.t_s, 3)]
         out += [_round(frame.load_g[l], 1) for l in self.weight]
         if self.weight:
-            out.append(_round(result.total_g, 1))
+            out += [_round(result.total_g, 1), _round(result.measured_kg, 3)]
         if self.corners:
             out += [round(c.x, 1), round(c.y, 1)] if c else [None, None]
         out += [_round(frame.tension_n[l], 2) for l in self.tension]
@@ -200,8 +200,8 @@ class XlsxSink:
         if src.timeouts or self.flagged:
             say("! 의심 행이 있다 (flags 열). sck_high 가 많으면 sudo -E 로 돌려볼 것.")
         lv = self.level_rows
-        say("위험도  정상 %d  주의 %d  위험 %d  판정 불가 %d (행)  알림 변화 %d번"
-            % (lv[OK], lv[CAUTION], lv[DANGER], lv[None], len(self.events)))
+        say("위험도  정상 %d  주의 %d  경고 %d  위험 %d  판정 불가 %d (행)  알림 변화 %d번"
+            % (lv[OK], lv[CAUTION], lv[WARNING], lv[DANGER], lv[None], len(self.events)))
         return self.rows
 
     def judge_info(self):
@@ -210,11 +210,11 @@ class XlsxSink:
         info = [("", "")]
         for i, line in enumerate(self.cfg.describe_judge().splitlines()):
             info.append(("판정 기준" if i == 0 else "", line.replace("판정", "", 1).strip()))
-        info.append(("위험도별 행 수", "정상 %d · 주의 %d · 위험 %d · 판정 불가 %d"
-                     % (lv[OK], lv[CAUTION], lv[DANGER], lv[None])))
+        info.append(("위험도별 행 수", "정상 %d · 주의 %d · 경고 %d · 위험 %d · 판정 불가 %d"
+                     % (lv[OK], lv[CAUTION], lv[WARNING], lv[DANGER], lv[None])))
         for k, nm in self.checks:
-            warn, danger = self.check_rows[k]
-            info.append(("  " + nm, "주의 %d행 · 위험 %d행" % (warn, danger)))
+            caution, warning, danger = self.check_rows[k]
+            info.append(("  " + nm, "주의 %d행 · 경고 %d행 · 위험 %d행" % (caution, warning, danger)))
         info.append(("알림 변화", "%d번 ('판정' 시트)%s" % (
             len(self.events), " · %d번에서 끊음" % MAX_EVENTS if len(self.events) >= MAX_EVENTS else "")))
         return info
@@ -262,7 +262,8 @@ CHECK_NAMES = {"load": "적재", "cog": "무게중심", "move": "화물 이동"}
 def pretty(col):
     """CSV 열 이름 -> 엑셀 머리글."""
     fixed = {"time": "시각", "t_s": "경과(초)", "total_g": "총하중(g)", "flags": "flags",
-             "load_kg": "적재 무게(kg)", "risk": "위험도(0정상 1주의 2위험)", "risk_text": "위험 내용",
+             "measured_kg": "측정 무게(kg)", "load_kg": "적재 무게(kg, 장력 뺌)",
+             "risk": "위험도(0정상 1주의 2경고 3위험)", "risk_text": "위험 내용",
              "h_y_mm": "h 앞뒤(mm)", "h_x_mm": "h 좌우(mm)",
              "k_y_pct": "하중이동 앞뒤(%/G)", "k_x_pct": "하중이동 좌우(%/G)"}
     if col in fixed:

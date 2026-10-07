@@ -34,10 +34,11 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 |---|---|
 | `total_g` | 바닥 셀 합(g). 하나라도 값이 없으면 `None` |
 | `cog` | `CoG(x, y, unit)`. 앞왼 셀 원점, `unit` 은 `"mm"`(BED_L/BED_W 있을 때) 또는 `"%"`. 모서리 값이 없거나 100 g 미만이면 `None` |
-| `load_kg` | 적재 무게(kg). 셀 합을 IMU `az` 로 나눠 위아래 출렁임을 빼고 평활 |
+| `load_kg` | 적재 무게(kg). 셀 합에서 벨트 누름(장력 × 2 sinα)을 뺀 화물 무게. IMU `az` 로 나눠 위아래 출렁임을 빼고 평활 |
+| `measured_kg` | 측정 무게(kg). 셀 합 그대로(벨트 누름 포함), `az` 로 나누고 평활 |
 | `transfer` | `Transfer(pred_x, pred_y, kx, ky)` — IMU 로 예측한 무게중심과 추정한 하중 이동 계수. mm 단위면 `k` 가 곧 무게중심 높이 h(mm) |
 | `tension_min` | `{장력 라벨: N}` 그 벨트 쪽 무게로 정한 장력 하한 |
-| `checks` | `[Check(key, name, level, text)]` 판정마다 하나. `level` 0 정상 · 1 주의 · 2 위험 · `None` 판정 불가 |
+| `checks` | `[Check(key, name, level, text)]` 판정마다 하나. `level` 0 정상 · 1 주의 · 2 경고 · 3 위험 · `None` 판정 불가 (경고는 아직 적재만) |
 | `level` | 전체 위험도 = `checks` 중 가장 높은 것 |
 | `changed` | `[(Check, 이전 레벨)]` 이번 프레임에 알림 레벨이 바뀐 판정 (화면 알림 · 엑셀 '판정' 시트) |
 
@@ -50,24 +51,25 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 |---|---|---|
 | `sensors/` | ① 센서 값 받기 | 드라이버만. 값을 읽는 순간 `CLOCK_MONOTONIC` 으로 시각을 찍어 `(t_ns, 값)` 을 돌려준다 |
 | `acquisition/` | ② 수집 · 정렬 · 기록 | 설정(`config.py`, `env.sh`), 프레임(`frame.py`, `source.py`), 기록(`log_xlsx.py` 엑셀, `log_sync.py` raw CSV). 자세한 건 [acquisition/README.md](acquisition/README.md) |
-| `analysis/` | ③ 판정 | `analyzer.py` 입구(`Frame` → `Result`), `cog.py` 총하중 · 무게중심 · 구역, `load.py` 적재, `transfer.py` h 추정 · 화물 이동, `tension.py` 장력, `risk.py` 위험도 공통 ([아래](#판정--위험도-analysis)) |
+| `analysis/` | ③ 판정 | `analyzer.py` 입구(`Frame` → `Result`), `cog.py` 총하중 · 무게중심 · 구역, `total.py` 적재, `transfer.py` h 추정 · 화물 이동, `tension.py` 장력, `risk.py` 위험도 공통 ([아래](#판정--위험도-analysis)) |
 | `calibration/` | 보정 | 로드셀 `calibrate.py` → `calib.json`, IMU `imu_calibrate.py` → `imu_cal.json` |
 | `tools/` | 점검 · 진단 | 배선 확인, IMU 실시간 각도, I2C 진단. 평소엔 안 쓴다 |
 | `twin/` | 디지털트윈 (D435i) | 깊이 프레임 → 2.5D 높이맵 → UDP. `acquisition/` 과 **별도 프로세스** |
 
 ## 판정 · 위험도 (`analysis/`)
 
-프레임마다 판정 4개를 하고 각각 **정상 / 주의 / 위험** 을 낸다. 전체 위험도는 그중 가장 높은 것이다.
-기준값은 전부 환경변수다 (`acquisition/config.py` 머리말, `python3 acquisition/config.py` 로 확인).
+프레임마다 판정 4개를 하고 각각 **정상 / 주의 / 위험** 을 낸다 (적재만 **경고** 를 더해 4단계). 전체 위험도는 그중 가장 높은 것이다.
+기준값은 환경변수다 (`acquisition/config.py` 머리말, `python3 acquisition/config.py` 로 확인). 적재 기준만 `analysis/total.py` 맨 위 상수.
 
 | 판정 | 파일 | 주의 | 위험 |
 |---|---|---|---|
-| 적재 | `load.py` | `LOAD_MAX_KG`(15kg) 의 90% 넘음 | 15kg 넘음 |
+| 적재 | `total.py` | 적정 `RATED_KG`(10kg) 의 110% 넘음 (125% 넘으면 경고) | 140% 넘음 |
 | 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_WARN`(25%) 안 | `COG_DANGER`(15%) 안 |
 | 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 셀 간격 `COG_RESID`(10%) 넘음 | 2배(20%) 넘음 |
 | 장력 `<라벨>` | `tension.py` | 그쪽 무게로 정한 하한보다 낮음 / `TENSION_MAX`(80N) 넘음 | 하한의 절반보다 낮음 |
 
-- **적재**: 셀 합을 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다. 화물이 넘어지며 벨트를 당길 때처럼 1~2초 튀는
+- **적재**: 셀 합에서 벨트가 화물을 누른 몫(장력 × 2 sin`TENSION_ANGLE`)을 빼고 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다.
+  110% = 도로교통법 시행령 제22조 허용 한도, 140% = 도로법 중대 위반(40% 이상 초과). 화물이 넘어지며 벨트를 당길 때처럼 1~2초 튀는
   값에는 안 뜨게 2초 이어져야 알린다.
 - **화물 이동** (주행 중 h 추론 → IMU 로 무게중심 변화가 맞는지): 가속도 a(G)로 달리면 무게중심이 h × a 만큼 옮겨진다.
   `X = X0 + kx·(ay − ay0)`, `Y = Y0 + ky·(ax − ax0)` (IMU 는 `COG_LAG` 0.2초 전 값, mm 단위면 k = h).
@@ -77,7 +79,8 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 - **장력**: `HX_TENSION` 순서대로 첫 번째 = N(앞)쪽 벨트 → 앞쪽 두 셀 무게, 두 번째 = S(뒤)쪽 벨트 → 뒤쪽 두 셀 무게.
   하한 = 그쪽 무게 × g(`TENSION_A` − `TENSION_MU`) / (2 `TENSION_MU` sin`TENSION_ANGLE`) (EN 12195-1, 최소 `TENSION_FLOOR`).
   기본값(0.5G, μ 0.4, 90°)이면 1.23 N/kg. 벨트가 하나뿐이면 네 셀 전부의 무게로 정한다.
-- 알림: 화면 상태줄 맨 앞에 `[위험 장력 T1 / 주의 무게중심]` 처럼 나오고, 판정 하나의 레벨이 바뀔 때마다 한 줄씩 찍힌다.
+  그쪽 무게에서는 그 벨트가 누른 몫을 빼고 쓴다 (안 빼면 세게 조일수록 하한도 올라간다).
+- 알림: 화면 상태줄 맨 앞에 `[위험 장력 T1 / 경고 적재 / 주의 무게중심]` 처럼 나오고, 판정 하나의 레벨이 바뀔 때마다 한 줄씩 찍힌다.
   엑셀에는 판정 열(노란 머리글: 적재 무게, 예측 무게중심, h, 장력 하한, 위험도, 판정별 레벨, 위험 내용),
   요약 시트에 판정 기준 · 위험도별 행 수, `판정` 시트에 레벨이 바뀐 순간이 남는다.
 - 한 프레임만 튀는 값에 알림이 깜빡이지 않게 판정마다 정해진 시간만큼 이어져야 올리고, 풀린 뒤에도 몇 초 붙잡아 둔다
