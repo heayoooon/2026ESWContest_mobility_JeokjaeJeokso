@@ -8,19 +8,32 @@ X0, Y0 = 가감속이 없을 때의 무게중심, ax0, ay0 = 그때의 IMU 값.
 
 h 추정: 가감속이 A_FIT 이상인 프레임마다 (a - a0, 무게중심 - X0) 점을 모아 원점을 지나는 직선의 기울기를
 최소제곱으로 낸다 (2026-10-03 급출발 기록에서 k 를 맞춘 방법과 같다). 오래된 점은 FORGET 로 잊고,
-COG_H 시작값은 PRIOR_W 만큼의 점으로 친다. 잔차가 위험 수준인 점(화물 이동)은 맞춤에 안 쓴다.
+COG_H 시작값은 PRIOR_W 만큼의 점으로 친다. 잔차가 경고 수준(E_WARNING 배) 이상인 점(화물 이동)은 맞춤에 안 쓴다.
 기울기 부호도 데이터로 정해지므로 IMU 가 반대로 달려 있어도 맞춰진다.
 
-변화 적절성: 잔차 = 실측 - 예측. 셀 간격의 COG_RESID % 를 넘으면 주의, 2배를 넘으면 위험.
-가감속으로 설명 안 되는 무게중심 변화 = 화물이 미끄러지거나 쓰러지거나 떨어진 것.
+화물 이동 판정: 잔차 = 실측 - 예측. 가감속으로 설명 안 되는 무게중심 변화 = 화물이 미끄러지거나 쓰러지거나
+떨어진 것. 세 단계로 거른다.
+ 1) 허용이 가속에 따라 커진다: 허용 = 셀 간격 x (COG_RESID + COG_RESID_A x |a|) %. 보상을 해도 급가감속 중에는
+    h 오차가 가속에 비례해 남기 때문이다. 조용하면 COG_RESID 까지 내려가 정차 · 정속 중의 이동도 잡는다.
+    |a| 는 최근 A_WIN 프레임의 최댓값(보상 오차는 가속 피크보다 조금 늦게 나온다).
+ 2) 프레임마다 e = 잔차 / 허용 (두 축 중 큰 쪽)으로 심각도 s 를 낸다: e < 1 정상, 1 이상 1(주의),
+    E_WARNING 이상 2(경고), E_DANGER 이상 3(위험). 최근 MOVE_WIN_S 초 안에서 s 가 L 이상인 프레임이
+    MOVE_ALPHA 비율 이상인 가장 높은 L 이 그 순간의 단계다. 한 프레임 튄 값은 여기서 걸러진다.
+ 3) 단계가 주의 이상으로 이어진 시간 T_slip 으로 의심과 확정을 나눈다. MOVE_CONFIRM_S 넘게 이어지면 최소
+    경고, MOVE_DANGER_S 넘게 이어지고 최근 e 의 중앙값이 E_DANGER 이상이면 위험. 급제동 순간의 보상 오차는
+    금방 꺼지지만 실제 이동은 계속된다. GRACE_S 안의 끊김은 이어서 센다.
 기준(X0, Y0)은 조용할 때(가감속 · 회전 없음) 천천히 따라가고, 화물이 새 자리에서 조용히 SETTLE_S 초
 머물면 그 자리를 새 기준으로 받아들인다. 알림은 analyzer 의 Hold 가 몇 초 더 붙잡아 둔다.
+
+Transfer.static_x / static_y 는 하중 이동(k x a)을 뺀 무게중심이다. 무게중심 위치 판정(cog.py zone)에 쓰면
+급제동 순간의 쏠림으로 오경보가 나지 않는다.
 """
 import collections
 import math
+import statistics
 from dataclasses import dataclass
 
-from analysis.risk import CAUTION, DANGER, OK, Check
+from analysis.risk import CAUTION, DANGER, OK, WARNING, Check
 
 A_FIT = 0.08        # G. 기준보다 이만큼 넘게 가감속할 때만 h 를 고친다
 A_QUIET = 0.04      # G. 기준 IMU 값과 이만큼 안이면 가감속 없음
@@ -30,7 +43,14 @@ PRIOR_W = 0.05      # G^2. COG_H 시작값을 이만큼의 점으로 친다 (0.2
 REF_TAU = 2.0       # 초. 조용할 때 기준 무게중심 · 기준 IMU 값이 따라가는 시정수
 SETTLE_S = 3.0      # 초. 이동한 화물이 새 자리에서 이만큼 조용히 있으면 새 기준으로
 RESET_S = 2.0       # 초. 무게중심이 이만큼 안 나오면(화물 내림) 기준을 버리고 다음 화물에서 새로 잡는다
-K_MAX = 2.0         # |k| 상한 = 셀 간격 x K_MAX (/G). 이상한 점 몇 개에 h 가 튀지 않게
+K_MAX = 1.0         # |k| 상한 = 셀 간격 x K_MAX (/G). 이상한 점 몇 개에 h 가 튀지 않게
+                    # (2026-10-04 화물추락: 추락 뒤 이동량이 맞춤에 섞여 h_y 가 556mm 까지 튀었다. 정상은 132~220mm)
+
+# --- 화물 이동 판정 ---------------------------------------------------------
+E_CAUTION, E_WARNING, E_DANGER = 1.0, 1.4, 1.8   # 허용의 몇 배부터 주의 / 경고 / 위험인가
+A_WIN = 3           # 프레임. 허용에 쓰는 |a| 를 최근 이만큼의 최댓값으로 (10Hz 에서 0.3초)
+MIN_WIN_N = 3       # 프레임. 최근 구간에 이만큼은 쌓여야 비율을 본다
+GRACE_S = 0.5       # 초. 단계가 이만큼 안에 다시 주의 이상이 되면 T_slip 을 이어 센다
 
 
 @dataclass
@@ -39,17 +59,27 @@ class Transfer:
     pred_y: float
     kx: float | None    # 하중 이동 계수, 좌우 (CoG 단위 / G). mm 단위면 곧 무게중심 높이 h(mm)
     ky: float | None    # 앞뒤. 시작값도 데이터도 없으면 None
+    static_x: float | None = None   # 하중 이동(k x a)을 뺀 무게중심. k 를 모르면 그대로의 무게중심
+    static_y: float | None = None
+    e: float | None = None          # 잔차 / 허용 (두 축 중 큰 쪽). 1 이면 허용만큼
+    t_slip: float = 0.0             # 초. 화물 이동(주의 이상)이 이어진 시간
 
 
 class _Axis:
     """무게중심 한 축과 그걸 움직이는 가속도 한 축 (X <- ay, Y <- ax)."""
 
-    def __init__(self, span, k0, resid_pct):
+    def __init__(self, span, k0, resid_pct, resid_a):
         self.span = span                        # 셀 간격 (CoG 단위)
-        self.thr = span * resid_pct / 100       # 잔차 허용 (CoG 단위)
+        self.resid = resid_pct                  # 정지 때 허용 (셀 간격 %)
+        self.resid_a = resid_a                  # 가속 1G 당 늘어나는 허용 (셀 간격 %)
+        self.thr = span * resid_pct / 100       # 정지 때 잔차 허용 (CoG 단위)
         self.k0 = k0
         self.sxy = self.sxx = 0.0
         self.c0 = self.a0 = None                # 기준 무게중심, 기준 가속도
+
+    def thr_at(self, a_mag):
+        """가속 크기 a_mag(G) 일 때 잔차 허용 (CoG 단위)."""
+        return self.span * (self.resid + self.resid_a * a_mag) / 100
 
     def k(self):
         if self.k0 is not None:
@@ -72,11 +102,21 @@ class TransferCheck:
         k0 = cfg.cog_h if bed else None         # % 단위면 mm 시작값을 못 쓴다
         self.unit = "mm" if bed else "%"
         self.lag = cfg.cog_lag
-        self.x = _Axis(span_x, k0, cfg.cog_resid)
-        self.y = _Axis(span_y, k0, cfg.cog_resid)
+        self.x = _Axis(span_x, k0, cfg.cog_resid, cfg.cog_resid_a)
+        self.y = _Axis(span_y, k0, cfg.cog_resid, cfg.cog_resid_a)
+        self.win_s = cfg.move_win_s             # 최근 구간 길이(초)
+        self.alpha = cfg.move_alpha             # 구간 안에서 이 비율 이상이어야 그 단계
+        self.confirm_s = cfg.move_confirm_s     # T_slip 이 이만큼이면 최소 경고
+        self.danger_s = cfg.move_danger_s       # T_slip 이 이만큼이면 위험 (e 도 E_DANGER 이상일 때)
         self.hist = collections.deque()         # 최근 COG_LAG 초 IMU (t, ax, ay, |gz|)
         self.prev_t = None                      # 마지막으로 무게중심을 본 시각
         self.settle = []                        # 이동한 화물의 새 자리 후보 [(t, X0, Y0)]
+        self._reset_judge()
+
+    def _reset_judge(self):
+        self.a_hist = collections.deque(maxlen=A_WIN)   # 최근 |a| (기준 IMU 값을 뺀 크기)
+        self.win = collections.deque()                  # 최근 MOVE_WIN_S 초 [(t, s, e)]
+        self.t_on = self.t_off = None                   # 이동이 이어진 시작 시각 / 마지막으로 꺼진 시각
 
     def __call__(self, t, c, imu):
         """-> (Transfer 또는 None, Check)"""
@@ -89,6 +129,7 @@ class TransferCheck:
         if c is None:
             if self.prev_t is not None and t - self.prev_t > RESET_S:
                 X.c0 = Y.c0 = None
+                self._reset_judge()
             return None, Check("move", "화물 이동", None, "무게중심 값 없음")
 
         _, ax, ay, _ = self.hist[0]             # COG_LAG 초 전 IMU (로드셀이 그만큼 늦다)
@@ -101,10 +142,13 @@ class TransferCheck:
             X.c0, Y.c0 = sx, sy
         px, py = X.c0 + (kx or 0) * day, Y.c0 + (ky or 0) * dax
         rx, ry = c.x - px, c.y - py
-        e = max(abs(rx) / X.thr, abs(ry) / Y.thr)       # 허용의 몇 배인가
+        self.a_hist.append(math.hypot(day, dax))
+        a_mag = max(self.a_hist)
+        thr_x, thr_y = X.thr_at(a_mag), Y.thr_at(a_mag)
+        e = max(abs(rx) / thr_x, abs(ry) / thr_y)       # 가속을 반영한 허용의 몇 배인가
 
         # h 맞춤: 가감속이 충분하고 화물 이동으로 안 보일 때만
-        if e < 2:
+        if e < E_WARNING:
             if abs(day) >= A_FIT:
                 X.fit(day, c.x - X.c0)
             if abs(dax) >= A_FIT:
@@ -115,7 +159,7 @@ class TransferCheck:
                     for _, a_x, a_y, gz in self.hist)
         dt = t - self.prev_t if self.prev_t is not None else 0.0
         self.prev_t = t
-        if e < 1:
+        if e < E_CAUTION:
             self.settle = []
             if quiet:
                 a = 1 - math.exp(-dt / REF_TAU)
@@ -135,15 +179,60 @@ class TransferCheck:
                 Y.c0 = sum(s[2] for s in self.settle) / len(self.settle)
                 self.settle = []
 
-        out = Transfer(px, py, kx, ky)
+        out = Transfer(px, py, kx, ky, static_x=sx, static_y=sy, e=e)
         if (kx is None and abs(day) >= A_QUIET) or (ky is None and abs(dax) >= A_QUIET):
             return out, Check("move", "화물 이동", None, "h 추정 중")
+
+        level = self._judge(t, e)
+        out.t_slip = self._t_slip(t)
         u = self.unit
-        if e < 1:
+        if level == OK:
             return out, Check("move", "화물 이동", OK, "잔차 X %+.0f Y %+.0f%s" % (rx, ry, u))
-        if abs(rx) / X.thr >= abs(ry) / Y.thr:
-            r, thr, side = rx, X.thr, "오른쪽" if rx > 0 else "왼쪽"
+        if abs(rx) / thr_x >= abs(ry) / thr_y:
+            r, thr, side = rx, thr_x, "오른쪽" if rx > 0 else "왼쪽"
         else:
-            r, thr, side = ry, Y.thr, "뒤쪽" if ry > 0 else "앞쪽"
-        return out, Check("move", "화물 이동", DANGER if e >= 2 else CAUTION,
-                          "가감속으로 설명 안 되는 이동 %s %.0f%s (허용 %.0f%s)" % (side, abs(r), u, thr, u))
+            r, thr, side = ry, thr_y, "뒤쪽" if ry > 0 else "앞쪽"
+        state = "확정" if out.t_slip >= self.confirm_s else "의심"
+        return out, Check("move", "화물 이동", level,
+                          "가감속으로 설명 안 되는 이동 %s %.0f%s (허용 %.0f%s) %s %.1f초" % (
+                              side, abs(r), u, thr, u, state, out.t_slip))
+
+    # ------------------------------------------------------------------
+    def _judge(self, t, e):
+        """프레임 하나의 e 를 최근 구간에 넣고 지금의 위험 단계(0 정상 ~ 3 위험)를 낸다."""
+        s = 3 if e >= E_DANGER else 2 if e >= E_WARNING else 1 if e >= E_CAUTION else 0
+        self.win.append((t, s, e))
+        while self.win and self.win[0][0] < t - self.win_s:
+            self.win.popleft()
+        n = len(self.win)
+        level = OK
+        if n >= MIN_WIN_N:
+            for lv in (DANGER, WARNING, CAUTION):
+                if sum(1 for _, k, _ in self.win if k >= lv) / n >= self.alpha:
+                    level = lv
+                    break
+
+        # 이동이 이어진 시간 (끊김은 GRACE_S 까지 이어서 센다)
+        if level >= CAUTION:
+            if self.t_on is None or (self.t_off is not None and t - self.t_off > GRACE_S):
+                self.t_on = t
+            self.t_off = None
+        elif self.t_on is not None and self.t_off is None:
+            self.t_off = t
+
+        slip = self._t_slip(t)
+        if level >= CAUTION and slip >= self.confirm_s:
+            level = max(level, WARNING)
+        if (level >= CAUTION and slip >= self.danger_s
+                and statistics.median(e_ for _, _, e_ in self.win) >= E_DANGER):
+            level = DANGER
+        return level
+
+    def _t_slip(self, t):
+        """이동이 이어진 시간(초). 꺼진 지 GRACE_S 가 지나면 0."""
+        if self.t_on is None:
+            return 0.0
+        if self.t_off is not None and t - self.t_off > GRACE_S:
+            self.t_on = self.t_off = None
+            return 0.0
+        return t - self.t_on

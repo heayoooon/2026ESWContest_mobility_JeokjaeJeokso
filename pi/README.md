@@ -58,14 +58,14 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 
 ## 판정 · 위험도 (`analysis/`)
 
-프레임마다 판정 4개를 하고 각각 **정상 / 주의 / 위험** 을 낸다 (적재만 **경고** 를 더해 4단계). 전체 위험도는 그중 가장 높은 것이다.
+프레임마다 판정 4개를 하고 각각 **정상 / 주의 / 위험** 을 낸다 (적재 · 무게중심 · 화물 이동만 **경고** 를 더해 4단계). 전체 위험도는 그중 가장 높은 것이다.
 기준값은 환경변수다 (`acquisition/config.py` 머리말, `python3 acquisition/config.py` 로 확인). 적재 기준만 `analysis/total.py` 맨 위 상수.
 
 | 판정 | 파일 | 주의 | 위험 |
 |---|---|---|---|
 | 적재 | `total.py` | 적정 `RATED_KG`(10kg) 의 110% 넘음 (125% 넘으면 경고) | 140% 넘음 |
-| 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_WARN`(25%) 안 | `COG_DANGER`(15%) 안 |
-| 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 셀 간격 `COG_RESID`(10%) 넘음 | 2배(20%) 넘음 |
+| 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_CAUTION`(25%) 안 (`COG_WARNING`(15%) 안이면 경고) | `COG_DANGER`(7%) 안 |
+| 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 허용(셀 간격 `COG_RESID`(10%) + `COG_RESID_A`(20%/G) x \|a\|) 넘음, 최근 `MOVE_WIN_S`(1초)의 `MOVE_ALPHA`(60%) 이상 (1.4배면 경고, `MOVE_CONFIRM_S`(1.5초) 이어져도 경고) | 1.8배 넘음 (`MOVE_DANGER_S`(3초) 이어져도 위험) |
 | 장력 `<라벨>` | `tension.py` | 그쪽 무게로 정한 하한보다 낮음 / `TENSION_MAX`(80N) 넘음 | 하한의 절반보다 낮음 |
 
 - **적재**: 셀 합에서 벨트가 화물을 누른 몫(장력 × 2 sin`TENSION_ANGLE`)을 빼고 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다.

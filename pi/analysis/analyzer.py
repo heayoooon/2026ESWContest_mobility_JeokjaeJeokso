@@ -1,10 +1,12 @@
 """판정 단계의 입구: Frame 하나 -> Result 하나. 판정은 pi 에서 하고 display 는 결과를 그린다.
 
-판정 4개 (analysis/risk.py). 적재는 정상 / 주의 / 경고 / 위험, 나머지는 정상 / 주의 / 위험.
+판정 4개 (analysis/risk.py). 적재 · 무게중심 · 화물 이동은 정상 / 주의 / 경고 / 위험, 장력은 정상 / 주의 / 위험.
 기준값은 환경변수 (acquisition/config.py), 적재만 total.py 맨 위 상수
     적재        셀 합에서 벨트 누름을 뺀 화물 무게 -> 적정 적재중량의 %      total.py
-    무게중심    판 가장자리에 얼마나 붙었나 COG_WARN / COG_DANGER         cog.py zone()
+    무게중심    판 가장자리에 얼마나 붙었나 COG_CAUTION / COG_WARNING / COG_DANGER   cog.py zone()
+                (하중 이동을 뺀 무게중심으로 본다)
     화물 이동   주행 중 h 를 추정해 IMU 로 무게중심 변화를 예측, 실측과 비교  transfer.py
+                (허용이 가속에 따라 커지고, 최근 구간 비율과 지속 시간으로 4단계)
     장력 <라벨> N쪽 · S쪽 무게로 정한 장력 하한과 비교                    tension.py
 판정마다 Hold 로 깜빡임을 거르고(HOLD), 전체 위험도는 그중 가장 높은 것이다.
 
@@ -21,7 +23,8 @@ from analysis.total import TotalLoadCheck
 from analysis.transfer import Transfer, TransferCheck
 
 # 판정별 (on_s, hold_s): 이만큼 이어져야 알리고, 풀린 뒤에도 이만큼 알림을 유지한다
-HOLD = {"load": (2.0, 2.0), "cog": (0.3, 1.0), "move": (0.3, 5.0)}
+#   화물 이동은 transfer.py 가 최근 구간 비율로 이미 단발성 값을 걸러서 on_s 를 0 으로 둔다
+HOLD = {"load": (2.0, 2.0), "cog": (0.3, 1.0), "move": (0.0, 5.0)}
 HOLD_TENSION = (0.5, 2.0)
 
 
@@ -52,7 +55,7 @@ class Analyzer:
         _, _, self.corners = cfg.roles()
         self.bed = (cfg.bed_l, cfg.bed_w) if cfg.bed_l else None
         self.imu = cfg.judge_imu or None
-        self.zone = (cfg.cog_warn, cfg.cog_danger)
+        self.zone = (cfg.cog_caution, cfg.cog_warning, cfg.cog_danger)
         self.load = TotalLoadCheck(cfg)
         self.transfer = TransferCheck(cfg, self.bed) if self.corners else None
         self.tension = TensionCheck(cfg)
@@ -70,9 +73,11 @@ class Analyzer:
         checks = [check]
         tr = None
         if self.corners:
-            checks.append(zone(c, self.bed, *self.zone))
-            tr, check = self.transfer(t, c, imu)
-            checks.append(check)
+            tr, move = self.transfer(t, c, imu)
+            # 위치 판정은 하중 이동(h x a)을 뺀 무게중심으로 한다. 급제동 순간의 쏠림에 놀라지 않게
+            still = CoG(tr.static_x, tr.static_y, c.unit) if tr and c else c
+            checks.append(zone(still, self.bed, *self.zone))
+            checks.append(move)
         mins, more = self.tension(t, frame, imu)
         checks += more
 
