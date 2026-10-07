@@ -4,11 +4,12 @@
     X = (FR + RR) / M * L        Y = (RL + RR) / M * W        M = 네 셀 합
 L, W 는 셀 간격(mm, BED_L / BED_W). 안 주면 % 로 낸다 (50 = 가운데).
 
-zone() 은 무게중심이 판 가장자리에 얼마나 붙었는지로 위험도를 낸다 (COG_WARN / COG_DANGER).
+zone() 은 무게중심이 판 가장자리에 얼마나 붙었는지로 위험도 4단계를 낸다
+(COG_CAUTION / COG_WARNING / COG_DANGER).
 """
 from dataclasses import dataclass
 
-from analysis.risk import CAUTION, DANGER, OK, Check
+from analysis.risk import CAUTION, DANGER, OK, WARNING, Check
 
 COG_MIN_G = 100     # 네 셀 합이 이보다 작으면 무게중심은 노이즈뿐이라 내지 않는다
 
@@ -44,9 +45,10 @@ def cog(frame, corners, bed=None):
     return CoG((fr + rr) / m * length, (rl + rr) / m * width, "mm" if bed else "%")
 
 
-def zone(c, bed, warn, danger):
+def zone(c, bed, caution, warning, danger):
     """무게중심이 가장 가까운 가장자리에서 셀 간격의 몇 % 안쪽인지 -> Check.
-    warn 보다 가까우면 주의, danger 보다 가까우면 위험 (셀 사각형 밖이면 음수라 당연히 위험)."""
+    caution 보다 가까우면 주의, warning 보다 가까우면 경고, danger 보다 가까우면 위험
+    (셀 사각형 밖이면 음수라 당연히 위험). 0 <= danger < warning < caution < 50."""
     if c is None:
         return Check("cog", "무게중심", None, "값 없음")
     length, width = bed or (100.0, 100.0)
@@ -55,6 +57,8 @@ def zone(c, bed, warn, danger):
     where = "X %.0f%% Y %.0f%%" % (fx, fy)
     if margin < danger:
         return Check("cog", "무게중심", DANGER, "%s 끝 %.0f%% (%s)" % (side, margin, where))
-    if margin < warn:
+    if margin < warning:
+        return Check("cog", "무게중심", WARNING, "%s 많이 쏠림 %.0f%% (%s)" % (side, margin, where))
+    if margin < caution:
         return Check("cog", "무게중심", CAUTION, "%s 쏠림 %.0f%% (%s)" % (side, margin, where))
     return Check("cog", "무게중심", OK, where)

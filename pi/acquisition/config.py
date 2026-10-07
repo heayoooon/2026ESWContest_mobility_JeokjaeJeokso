@@ -29,17 +29,25 @@ HX711
                N쪽 벨트는 앞쪽 두 셀(COG_CORNERS 1·2번), S쪽은 뒤쪽 두 셀(3·4번) 무게로 장력 하한을 정한다.
                벨트가 하나뿐이면 네 셀 전부
 
-판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (경고는 아직 적재만 쓴다)
+판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (경고는 아직 적재 · 무게중심만 쓴다)
   적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
-  COG_WARN     무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
-  COG_DANGER   같은 방식으로 위험                                기본 15
-               (기본값이면 가운데 50% = 정상, 그 바깥 10% = 주의, 가장자리 15% = 위험)
-  COG_RESID    IMU 로 예측한 무게중심과 실측의 차 허용(셀 간격 %).
-               넘으면 주의, 2배를 넘으면 위험 (가감속으로 설명 안 되는 변화 = 화물 이동)  기본 10
-  COG_LAG      로드셀이 IMU 보다 늦는 시간(초)                  기본 0.2
+  COG_CAUTION  무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
+  COG_WARNING  같은 방식으로 경고                                기본 15
+  COG_DANGER   같은 방식으로 위험                                기본 7
+               (기본값이면 가운데 50% = 정상, 그 바깥 10% = 주의, 8% = 경고, 가장자리 7% = 위험)
+  COG_RESID    IMU 로 예측한 무게중심과 실측의 차 허용(셀 간격 %), 가속이 없을 때.
+               가감속으로 설명 안 되는 변화 = 화물 이동. 허용의 1 · 1.4 · 1.8배부터 주의 · 경고 · 위험  기본 10
+  COG_RESID_A  가속 1G 당 늘어나는 허용(셀 간격 %). 허용 = COG_RESID + COG_RESID_A x |a|.
+               보상을 해도 급가감속 중에는 h 오차가 가속에 비례해 남는다      기본 20
+  MOVE_WIN_S   화물 이동을 볼 최근 구간(초)                       기본 1.0
+  MOVE_ALPHA   그 구간에서 이 비율 이상이 그 단계여야 판정 (단발성 충격을 거른다)  기본 0.6
+  MOVE_CONFIRM_S  이동이 이만큼(초) 이어지면 최소 경고 (그 전은 의심)  기본 1.5
+  MOVE_DANGER_S   이동이 이만큼(초) 이어지고 잔차가 위험 수준이면 위험  기본 3.0
+  COG_LAG     로드셀이 IMU 보다 늦는 시간(초)                  기본 0.2
   COG_H        무게중심 높이 h 의 시작값(mm). 주행 중 가감속 데이터로 고쳐 나간다.
-               BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 220
-               (2026-10-03 급출발 기록에서 맞춘 k = 56.6 %/G x BED_W 392mm)
+               BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 190
+               (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm).
+               화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 이 값으로 돌아간다
   JUDGE_IMU    하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
   TENSION_MU   화물-바닥 마찰계수                                기본 0.4
@@ -144,11 +152,17 @@ class Config:
         self.imu_cal = _str("IMU_CAL", "")
 
         # --- 판정 · 위험도 -----------------------------------------------
-        self.cog_warn = _float("COG_WARN", 25)
-        self.cog_danger = _float("COG_DANGER", 15)
+        self.cog_caution = _float("COG_CAUTION", 25)
+        self.cog_warning = _float("COG_WARNING", 15)
+        self.cog_danger = _float("COG_DANGER", 7)
         self.cog_resid = _float("COG_RESID", 10)
+        self.cog_resid_a = _float("COG_RESID_A", 20)
+        self.move_win_s = _float("MOVE_WIN_S", 1.0)
+        self.move_alpha = _float("MOVE_ALPHA", 0.6)
+        self.move_confirm_s = _float("MOVE_CONFIRM_S", 1.5)
+        self.move_danger_s = _float("MOVE_DANGER_S", 3.0)
         self.cog_lag = _float("COG_LAG", 0.2)
-        self.cog_h = _float("COG_H", 220) or None
+        self.cog_h = _float("COG_H", 190) or None
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
         self.tension_mu = _float("TENSION_MU", 0.4)
@@ -211,11 +225,18 @@ class Config:
             raise SystemExit("BED_L 과 BED_W 는 둘 다 주거나 둘 다 비운다")
         if self.bed_l is not None and (self.bed_l < 0 or self.bed_w < 0):
             raise SystemExit("BED_L / BED_W 는 양수(mm)")
-        if not 0 <= self.cog_danger < self.cog_warn < 50:
-            raise SystemExit("0 <= COG_DANGER < COG_WARN < 50 (가장자리에서 셀 간격 %%): %g, %g"
-                             % (self.cog_danger, self.cog_warn))
+        if not 0 <= self.cog_danger < self.cog_warning < self.cog_caution < 50:
+            raise SystemExit("0 <= COG_DANGER < COG_WARNING < COG_CAUTION < 50 (가장자리에서 셀 간격 %%): %g, %g, %g"
+                             % (self.cog_danger, self.cog_warning, self.cog_caution))
         if self.cog_resid <= 0 or self.cog_lag < 0:
             raise SystemExit("COG_RESID 는 양수(%), COG_LAG 는 0 이상(초)")
+        if self.cog_resid_a < 0:
+            raise SystemExit("COG_RESID_A 는 0 이상(셀 간격 %/G)")
+        if self.move_win_s <= 0 or not 0 < self.move_alpha <= 1:
+            raise SystemExit("MOVE_WIN_S 는 양수(초), MOVE_ALPHA 는 0 초과 1 이하")
+        if not 0 < self.move_confirm_s < self.move_danger_s:
+            raise SystemExit("0 < MOVE_CONFIRM_S < MOVE_DANGER_S (초): %g, %g"
+                             % (self.move_confirm_s, self.move_danger_s))
         if self.cog_h is not None and self.cog_h < 0:
             raise SystemExit("COG_H 는 양수(mm). 0 이면 시작값 없이 데이터로만 추정")
         if self.judge_imu and self.judge_imu not in self.imu_labels:
@@ -319,11 +340,16 @@ class Config:
         lines = ["판정   적재  적정 %gkg 의 %d%% 넘으면 주의, %d%% 경고, %d%% 위험 (셀 합에서 장력 1N 당 %.0fg 뺌)" % (
             total.RATED_KG, total.CAUTION_PCT, total.WARNING_PCT, total.DANGER_PCT, self.belt_push_g_per_n())]
         if corners:
-            lines.append("       무게중심  가장자리에서 %g%% 안 = 주의, %g%% 안 = 위험" % (self.cog_warn, self.cog_danger))
-            lines.append("       화물 이동  IMU(%s) 예측과 차 %g%% 넘으면 주의, %g%% 넘으면 위험 "
-                         "(지연 %.1fs, h 시작 %s)" % (
-                             self.judge_imu or "없음", self.cog_resid, 2 * self.cog_resid, self.cog_lag,
-                             "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
+            lines.append("       무게중심  가장자리에서 %g%% 안 = 주의, %g%% 안 = 경고, %g%% 안 = 위험" % (
+                self.cog_caution, self.cog_warning, self.cog_danger))
+            from analysis import transfer           # 허용 배수는 환경변수가 아니라 transfer.py 상수
+            lines.append("       화물 이동  IMU(%s) 예측과 차가 허용(%g%% + %g%%/G x |a|)의 %g · %g · %g배부터 주의 · 경고 · 위험, "
+                         "최근 %gs 의 %g%% 이상일 때" % (
+                             self.judge_imu or "없음", self.cog_resid, self.cog_resid_a, transfer.E_CAUTION,
+                             transfer.E_WARNING, transfer.E_DANGER, self.move_win_s, 100 * self.move_alpha))
+            lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h 시작 %s)" % (
+                self.move_confirm_s, self.move_danger_s, self.cog_lag,
+                "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
         sides = self.belt_sides()
         if sides:
             lines.append("       장력 하한 = 쪽 무게(그 벨트 누름 뺌) x %.2f N/kg (최소 %gN, 상한 %gN)  %s" % (
