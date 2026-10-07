@@ -10,6 +10,9 @@ h 추정: 가감속이 A_FIT 이상인 프레임마다 (a - a0, 무게중심 - X
 최소제곱으로 낸다 (2026-10-03 급출발 기록에서 k 를 맞춘 방법과 같다). 오래된 점은 FORGET 로 잊고,
 COG_H 시작값은 PRIOR_W 만큼의 점으로 친다. 잔차가 경고 수준(E_WARNING 배) 이상인 점(화물 이동)은 맞춤에 안 쓴다.
 기울기 부호도 데이터로 정해지므로 IMU 가 반대로 달려 있어도 맞춰진다.
+화물이 달라졌다고 볼 때는 학습한 h 를 버리고 COG_H 로 돌아간다: 화물 이동이 위험으로 확정된 순간, 그리고 화물을
+내려서 무게중심이 RESET_S 초 넘게 안 나올 때. 위험이 뜨기 직전 프레임들이 맞춤에 섞여 h 가 튀어 있어도(2026-10-04
+화물추락: 220 -> 337mm) 운전자가 멈추고 다시 묶은 뒤까지 이어지지 않는다.
 
 화물 이동 판정: 잔차 = 실측 - 예측. 가감속으로 설명 안 되는 무게중심 변화 = 화물이 미끄러지거나 쓰러지거나
 떨어진 것. 세 단계로 거른다.
@@ -95,6 +98,10 @@ class _Axis:
         self.sxy = FORGET * self.sxy + da * dc
         self.sxx = FORGET * self.sxx + da * da
 
+    def forget_fit(self):
+        """학습한 h 를 버린다. k() 는 다시 시작값 k0 에서 출발한다."""
+        self.sxy = self.sxx = 0.0
+
 
 class TransferCheck:
     def __init__(self, cfg, bed):
@@ -117,6 +124,7 @@ class TransferCheck:
         self.a_hist = collections.deque(maxlen=A_WIN)   # 최근 |a| (기준 IMU 값을 뺀 크기)
         self.win = collections.deque()                  # 최근 MOVE_WIN_S 초 [(t, s, e)]
         self.t_on = self.t_off = None                   # 이동이 이어진 시작 시각 / 마지막으로 꺼진 시각
+        self.was_danger = False                         # 지난 프레임이 위험이었나 (위험이 새로 뜰 때만 h 를 버린다)
 
     def __call__(self, t, c, imu):
         """-> (Transfer 또는 None, Check)"""
@@ -128,7 +136,9 @@ class TransferCheck:
         X, Y = self.x, self.y
         if c is None:
             if self.prev_t is not None and t - self.prev_t > RESET_S:
-                X.c0 = Y.c0 = None
+                X.c0 = Y.c0 = None                      # 화물을 내렸다: 기준도, 이전 화물로 학습한 h 도 버린다
+                X.forget_fit()
+                Y.forget_fit()
                 self._reset_judge()
             return None, Check("move", "화물 이동", None, "무게중심 값 없음")
 
@@ -184,6 +194,10 @@ class TransferCheck:
             return out, Check("move", "화물 이동", None, "h 추정 중")
 
         level = self._judge(t, e)
+        if level == DANGER and not self.was_danger:     # 화물이 달라졌다: 위험 직전 프레임이 섞인 h 를 버린다
+            X.forget_fit()
+            Y.forget_fit()
+        self.was_danger = level == DANGER
         out.t_slip = self._t_slip(t)
         u = self.unit
         if level == OK:

@@ -45,8 +45,9 @@ HX711
   MOVE_DANGER_S   이동이 이만큼(초) 이어지고 잔차가 위험 수준이면 위험  기본 3.0
   COG_LAG     로드셀이 IMU 보다 늦는 시간(초)                  기본 0.2
   COG_H        무게중심 높이 h 의 시작값(mm). 주행 중 가감속 데이터로 고쳐 나간다.
-               BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 220
-               (2026-10-03 급출발 기록에서 맞춘 k = 56.6 %/G x BED_W 392mm)
+               BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 190
+               (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm).
+               화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 이 값으로 돌아간다
   JUDGE_IMU    하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
   TENSION_MU   화물-바닥 마찰계수                                기본 0.4
@@ -161,7 +162,7 @@ class Config:
         self.move_confirm_s = _float("MOVE_CONFIRM_S", 1.5)
         self.move_danger_s = _float("MOVE_DANGER_S", 3.0)
         self.cog_lag = _float("COG_LAG", 0.2)
-        self.cog_h = _float("COG_H", 220) or None
+        self.cog_h = _float("COG_H", 190) or None
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
         self.tension_mu = _float("TENSION_MU", 0.4)
