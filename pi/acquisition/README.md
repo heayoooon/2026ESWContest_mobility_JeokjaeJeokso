@@ -93,8 +93,8 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/l
 | `COG_LAG` | `0.2` | 로드셀이 IMU 보다 늦는 시간(초) |
 | `COG_H` | `190` | 무게중심 높이 h 시작값(mm). 주행 중 데이터로 고쳐 나가고, 화물 이동이 위험으로 확정되거나 화물을 내리면 이 값으로 돌아간다 |
 | `JUDGE_IMU` | IMU 첫 번째 | 하중 이동 예측 · 무게 보정에 쓸 차체 IMU |
-| `TENSION_A` / `TENSION_MU` / `TENSION_ANGLE` | `0.5` / `0.4` / `90` | 장력 하한 = 그쪽 무게 × g(A−μ)/(2μ sinα). `HX_TENSION` 첫 번째 = N쪽(앞 두 셀), 두 번째 = S쪽(뒤 두 셀). 벨트 누름(장력 × 2 sinα)을 셀 합에서 뺄 때도 α 를 쓴다 |
-| `TENSION_FLOOR` / `TENSION_MAX` | `2` / `80` | 장력 하한의 최솟값 / 상한(N) |
+| `TENSION_A` / `TENSION_MU` / `TENSION_ANGLE` | `0.5` / `0.4` / `90` | 장력 하한 = 그쪽 무게 × g(A−μ)fs/(2μ sinα), fs 1.1 (`analysis/tension.py`). `HX_TENSION` 첫 번째 = N쪽(앞 두 셀), 두 번째 = S쪽(뒤 두 셀). 벨트 누름(장력 × 2 sinα)을 셀 합에서 뺄 때도 α 를 쓴다 |
+| `TENSION_FLOOR` / `TENSION_MAX` | `2` / `80` | 장력 하한의 최솟값 / 상한(N, 벨트 · 셀이 견디는 힘). 하한의 100 · 75 · 50% 밑, 상한의 50 · 75 · 100% 넘음이 주의 · 경고 · 위험 |
 | `IMU_BUS` | `1` | I2C 버스 |
 | `IMU_ADDRS` | `0x68` | 파이 I2C 에 직접 물린 센서 주소 |
 | `IMU_LABELS` | `imu1` | 주소 순서대로 붙일 이름 |

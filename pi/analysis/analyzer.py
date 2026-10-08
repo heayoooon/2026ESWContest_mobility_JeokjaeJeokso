@@ -1,13 +1,13 @@
 """판정 단계의 입구: Frame 하나 -> Result 하나. 판정은 pi 에서 하고 display 는 결과를 그린다.
 
-판정 4개 (analysis/risk.py). 적재 · 무게중심 · 화물 이동은 정상 / 주의 / 경고 / 위험, 장력은 정상 / 주의 / 위험.
-기준값은 환경변수 (acquisition/config.py), 적재만 total.py 맨 위 상수
+판정 4개 (analysis/risk.py). 넷 다 정상 / 주의 / 경고 / 위험.
+기준값은 환경변수 (acquisition/config.py), 적재 · 장력 단계 기준만 total.py · tension.py 맨 위 상수
     적재        셀 합에서 벨트 누름을 뺀 화물 무게 -> 적정 적재중량의 %      total.py
     무게중심    판 가장자리에 얼마나 붙었나 COG_CAUTION / COG_WARNING / COG_DANGER   cog.py zone()
                 (하중 이동을 뺀 무게중심으로 본다)
     화물 이동   주행 중 h 를 추정해 IMU 로 무게중심 변화를 예측, 실측과 비교  transfer.py
                 (허용이 가속에 따라 커지고, 최근 구간 비율과 지속 시간으로 4단계)
-    장력 <라벨> N쪽 · S쪽 무게로 정한 장력 하한과 비교                    tension.py
+    장력 N / S  N쪽 · S쪽 벨트마다 그쪽 무게로 정한 하한의 % · 상한의 %    tension.py
 판정마다 Hold 로 깜빡임을 거르고(HOLD), 전체 위험도는 그중 가장 높은 것이다.
 
 판정을 추가할 때는 Result 에 필드를 하나 더하고 Analyzer.__call__ 에서 채운다.
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from analysis.cog import CoG, cog, total_load, zone
 from analysis.risk import Hold
-from analysis.tension import TensionCheck
+from analysis.tension import TensionCheck, check_name
 from analysis.total import TotalLoadCheck
 from analysis.transfer import Transfer, TransferCheck
 
@@ -30,11 +30,11 @@ HOLD_TENSION = (0.5, 2.0)
 
 def check_list(cfg):
     """판정 목록 [(key, 이름)]. 설정으로 정해지고, CSV 판정 열 순서이기도 하다."""
-    _, tension, corners = cfg.roles()
+    _, _, corners = cfg.roles()
     out = [("load", "적재")]
     if corners:
         out += [("cog", "무게중심"), ("move", "화물 이동")]
-    return out + [(t, "장력 " + t) for t in tension]
+    return out + [(t, check_name(side, t)) for t, (side, _) in cfg.belt_sides().items()]
 
 
 @dataclass
