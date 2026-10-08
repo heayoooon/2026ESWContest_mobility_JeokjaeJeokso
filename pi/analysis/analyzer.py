@@ -8,7 +8,11 @@
     화물 이동   주행 중 h 를 추정해 IMU 로 무게중심 변화를 예측, 실측과 비교  transfer.py
                 (허용이 가속에 따라 커지고, 최근 구간 비율과 지속 시간으로 4단계)
     장력 N / S  N쪽 · S쪽 벨트마다 그쪽 무게로 정한 하한의 % · 상한의 %    tension.py
-판정마다 Hold 로 깜빡임을 거르고(HOLD), 전체 위험도는 그중 가장 높은 것이다.
+판정마다 Hold 로 깜빡임을 거른다(HOLD).
+
+종합 위험도(Result.level)는 적재 · 무게중심 · 장력의 단계(0~3)를 안전 여유 곱으로 합친 것이다 (overall.py).
+판정 하나가 위험이면 종합도 위험이고, 여러 판정이 같이 나쁘면 한 단계 위로 올라간다 (경고 둘 -> 위험, 주의 셋 -> 경고).
+화물 이동은 종합에 안 넣고 따로 알린다 (checks 의 "move").
 
 판정을 추가할 때는 Result 에 필드를 하나 더하고 Analyzer.__call__ 에서 채운다.
 기록 · 전송 쪽(sink)은 Result 를 통째로 받으므로 함수 모양이 바뀌지 않는다.
@@ -17,7 +21,8 @@
 from dataclasses import dataclass
 
 from analysis.cog import CoG, cog, total_load, zone
-from analysis.risk import Hold
+from analysis.overall import overall
+from analysis.risk import Check, Hold
 from analysis.tension import TensionCheck, check_name
 from analysis.total import TotalLoadCheck
 from analysis.transfer import Transfer, TransferCheck
@@ -46,8 +51,10 @@ class Result:
     transfer: Transfer | None   # IMU 로 예측한 무게중심 + 추정한 하중 이동 계수(h)
     tension_min: dict           # {장력 라벨: 그쪽 무게로 정한 장력 하한 N | None}
     checks: list                # [Check] Analyzer.checks 순서. 판정 못 하면 level None
-    level: int | None           # 전체 위험도 = checks 중 가장 높은 것. 하나도 판정 못 하면 None
-    changed: list               # [(Check, 이전 레벨)] 이번 프레임에 알림 레벨이 바뀐 판정
+    level: int | None           # 종합 위험도 = 적재 · 무게중심 · 장력 단계의 안전 여유 곱 (overall.py).
+                                #   화물 이동은 안 들어간다. 하나도 판정 못 하면 None
+    changed: list               # [(Check, 이전 레벨)] 이번 프레임에 알림 레벨이 바뀐 판정.
+                                #   종합 위험도가 바뀌면 key "risk" 인 Check 가 맨 뒤에 붙는다
 
 
 class Analyzer:
@@ -62,6 +69,7 @@ class Analyzer:
         self.checks = check_list(cfg)
         self.holds = {k: Hold(*HOLD.get(k, HOLD_TENSION)) for k, _ in self.checks}
         self.last = {k: None for k, _ in self.checks}
+        self.last_level = None                  # 지난 프레임 종합 위험도
 
     def __call__(self, frame):
         t = frame.t_s
@@ -89,6 +97,10 @@ class Analyzer:
             if ch.level != old and max(ch.level or 0, old or 0) > 0:
                 changed.append((ch, old))
             self.last[ch.key] = ch.level
-        level = max((ch.level for ch in checks if ch.level is not None), default=None)
+        level, text = overall(checks)
+        old = self.last_level
+        if level != old and max(level or 0, old or 0) > 0:
+            changed.append((Check("risk", "종합 위험도", level, text), old))
+        self.last_level = level
         return Result(total_g=total, cog=c, load_kg=load_kg, measured_kg=measured_kg, transfer=tr,
                       tension_min=mins, checks=checks, level=level, changed=changed)

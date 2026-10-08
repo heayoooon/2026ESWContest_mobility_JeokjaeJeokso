@@ -32,6 +32,7 @@ HX711
 판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (판정 4개 다 쓴다)
   적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
   장력 단계 기준(하한 · 상한의 몇 %, 안전계수 fs)도 analysis/tension.py 맨 위 상수다
+  종합 위험도는 적재 · 무게중심 · 장력 단계를 합친 것이다 (analysis/overall.py, 화물 이동은 안 넣는다)
   COG_CAUTION  무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
   COG_WARNING  같은 방식으로 경고                                기본 15
   COG_DANGER   같은 방식으로 위험                                기본 7
@@ -356,6 +357,8 @@ class Config:
             lines.append("             하한의 %d%% 밑 주의, %d%% 경고, %d%% 위험 / 상한 %gN 의 %d%% 넘으면 주의, %d%% 경고, %d%% 위험" % (
                 tension.LOW_CAUTION_PCT, tension.LOW_WARNING_PCT, tension.LOW_DANGER_PCT, self.tension_max,
                 tension.HIGH_CAUTION_PCT, tension.HIGH_WARNING_PCT, tension.HIGH_DANGER_PCT))
+        lines.append("       종합  적재 · 무게중심 · 장력(나쁜 벨트) 단계를 안전 여유 곱으로 합침: 하나라도 위험이면 위험, "
+                     "경고 둘 -> 위험, 주의 셋 -> 경고. 화물 이동은 안 넣고 따로 알림")
         return "\n".join(lines)
 
 

@@ -151,7 +151,7 @@ HX_LABELS=FL,FR,RL,RR,T1,T2 LOG_SECONDS=60 python3 acquisition/log_sync.py
 | `source.py` | 센서 열기 · HX711 대기 루프 · IMU 구간 평균 → `FrameSource.frames()` 가 `Frame` 을 낸다 |
 | `log_xlsx.py` | `XlsxSink`: `write(frame, result)` → CSV 한 행, 끝날 때 엑셀 |
 | `log_camera.py` | `CameraLog`: 트윈 노드 UDP 패킷을 **별도 프로세스**로 받아 `<이름>_camera` CSV / 엑셀 ([아래](#카메라-엑셀-이름_cameraxlsx)) |
-| `../analysis/analyzer.py` | `Analyzer(cfg)(frame)` → `Result` (총하중 · 무게중심 + 판정 4개 · 위험도). [../README.md](../README.md#판정--위험도-analysis) |
+| `../analysis/analyzer.py` | `Analyzer(cfg)(frame)` → `Result` (총하중 · 무게중심 + 판정 4개 · 종합 위험도). [../README.md](../README.md#판정--위험도-analysis) |
 | `../pipeline.py` | 위를 잇는 실행 파일 |
 
 ### PC 에서 먼저 (VS Code, 파이 없이)
