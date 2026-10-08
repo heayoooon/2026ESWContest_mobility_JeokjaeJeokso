@@ -90,7 +90,7 @@ class XlsxSink:
         self.rows = self.flagged = 0
         self.first_t = self.last_t = None
         self.last_flush = 0.0
-        self.level_rows = {None: 0, OK: 0, CAUTION: 0, WARNING: 0, DANGER: 0}     # 전체 위험도별 행 수
+        self.level_rows = {None: 0, OK: 0, CAUTION: 0, WARNING: 0, DANGER: 0}     # 종합 위험도별 행 수
         self.check_rows = {k: [0, 0, 0] for k, _ in self.checks}      # 판정별 [주의, 경고, 위험] 행 수
         self.events = []                        # 알림 레벨이 바뀐 순간 (엑셀 '판정' 시트)
 
@@ -200,7 +200,7 @@ class XlsxSink:
         if src.timeouts or self.flagged:
             say("! 의심 행이 있다 (flags 열). sck_high 가 많으면 sudo -E 로 돌려볼 것.")
         lv = self.level_rows
-        say("위험도  정상 %d  주의 %d  경고 %d  위험 %d  판정 불가 %d (행)  알림 변화 %d번"
+        say("종합 위험도  정상 %d  주의 %d  경고 %d  위험 %d  판정 불가 %d (행)  알림 변화 %d번"
             % (lv[OK], lv[CAUTION], lv[WARNING], lv[DANGER], lv[None], len(self.events)))
         return self.rows
 
@@ -210,7 +210,7 @@ class XlsxSink:
         info = [("", "")]
         for i, line in enumerate(self.cfg.describe_judge().splitlines()):
             info.append(("판정 기준" if i == 0 else "", line.replace("판정", "", 1).strip()))
-        info.append(("위험도별 행 수", "정상 %d · 주의 %d · 경고 %d · 위험 %d · 판정 불가 %d"
+        info.append(("종합 위험도별 행 수", "정상 %d · 주의 %d · 경고 %d · 위험 %d · 판정 불가 %d"
                      % (lv[OK], lv[CAUTION], lv[WARNING], lv[DANGER], lv[None])))
         for k, nm in self.checks:
             caution, warning, danger = self.check_rows[k]
@@ -263,7 +263,7 @@ def pretty(col):
     """CSV 열 이름 -> 엑셀 머리글."""
     fixed = {"time": "시각", "t_s": "경과(초)", "total_g": "총하중(g)", "flags": "flags",
              "measured_kg": "측정 무게(kg)", "load_kg": "적재 무게(kg, 장력 뺌)",
-             "risk": "위험도(0정상 1주의 2경고 3위험)", "risk_text": "위험 내용",
+             "risk": "종합 위험도(0정상 1주의 2경고 3위험)", "risk_text": "위험 내용",
              "h_y_mm": "h 앞뒤(mm)", "h_x_mm": "h 좌우(mm)",
              "k_y_pct": "하중이동 앞뒤(%/G)", "k_x_pct": "하중이동 좌우(%/G)"}
     if col in fixed:
