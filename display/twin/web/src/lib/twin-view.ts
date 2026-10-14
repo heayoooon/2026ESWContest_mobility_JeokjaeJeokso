@@ -237,8 +237,17 @@ export function buildView(state: TwinState | null, connected: boolean): TwinView
   if (!connected || !state) {
     verdict = { level: null, word: '대기', headline: '센서 신호를 기다리는 중', detail: '', more: 0, top: null, move: null }
   } else if (!judged) {
-    // 실시간: 카메라는 오는데 센서 · 판정이 아직 없다 (센서 파이 sensor_feed 가 꺼졌거나 센서 선이 빠짐)
-    verdict = { level: null, word: '판정 대기', headline: '센서 값을 기다리는 중입니다', detail: '카메라 화면만 들어오고 있어요', more: 0, top: null, move: null }
+    // 실시간: 카메라는 오는데 판정이 없다. 센서 값이 일부라도 오면 어떤 센서가 안 읽히는지 알려 준다
+    const sn = state.sensors
+    const names: [string, number | null][] = [
+      ['앞왼', sn.loads.NW], ['앞오', sn.loads.NE], ['뒤왼', sn.loads.SW], ['뒤오', sn.loads.SE],
+      ['앞 벨트', sn.belts?.find((b) => b.key === 'c1')?.n ?? sn.tension_n], ['뒤 벨트', sn.belts?.find((b) => b.key === 'c2')?.n ?? null],
+    ]
+    const missing = names.filter(([, v]) => v === null || v === undefined).map(([n]) => n)
+    const any = names.some(([, v]) => v !== null && v !== undefined)
+    verdict = any
+      ? { level: null, word: '판정 불가', headline: '센서 일부가 읽히지 않습니다', detail: missing.length ? `안 읽힘: ${missing.join(' · ')}` : '판정에 필요한 값이 모자랍니다', more: 0, top: null, move: null }
+      : { level: null, word: '판정 대기', headline: '센서 값을 기다리는 중입니다', detail: '카메라 화면만 들어오고 있어요', more: 0, top: null, move: null }
   } else {
     const bad = checks.filter((c) => c.key !== 'move' && (c.level ?? 0) > 0).sort((a, b) => weight(b) - weight(a))
     // 종합 = 센서 파이 값 (안전 여유 곱: 경고 둘이면 위험). 없으면 가장 나쁜 판정
