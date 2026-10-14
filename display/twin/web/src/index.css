@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+/* 나눔고딕 400 / 700 / 800 (OFL) 은 이 앱에 들어 있는 사본만 쓴다. 인터넷 글꼴(Google)은 부르지 않는다:
+   인터넷이 막힌 망에서 첫 화면이 그 요청을 기다리며 검게 멈출 수 있었다 */
+@font-face { font-family: 'Nanum Gothic'; font-weight: 400; font-display: swap; src: local('NanumGothic'), url('/fonts/NanumGothic.ttf') format('truetype'); }
+@font-face { font-family: 'Nanum Gothic'; font-weight: 700; font-display: swap; src: local('NanumGothic Bold'), url('/fonts/NanumGothicBold.ttf') format('truetype'); }
+@font-face { font-family: 'Nanum Gothic'; font-weight: 800; font-display: swap; src: local('NanumGothic ExtraBold'), url('/fonts/NanumGothicExtraBold.ttf') format('truetype'); }
+
+@theme {
+  --font-sans: 'Nanum Gothic', sans-serif;
+}
+
+html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+body { font-family: 'Nanum Gothic', sans-serif; color: #f4f1ea; -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none; }
+* { -webkit-tap-highlight-color: transparent; }
