@@ -395,15 +395,21 @@ class Registration:
         self.est = collections.deque(maxlen=self.N)
         self.value = None
         self.saved_t = 0.0
+        self.locked = False
         try:
             with open(self.path) as f:
                 d = json.load(f)
             self.value = (float(d['cx']), float(d['cy']))
+            self.locked = os.environ.get('TWIN_REG_LEARN', '') != '1'
             self.est.extend([self.value] * min(int(d.get('n', 0)), 200))
         except (OSError, ValueError, KeyError, TypeError):
             pass
 
     def update(self, boxes, s):
+        # 이미 맞춘 값(run/reg.json)이 있으면 고정한다: 카메라 거치대는 그대로인데, 로드셀 하나가 틀리게 읽히면
+        # (영점 · 부호) 무게중심이 틀려 화물이 엉뚱한 데로 밀려 그려진다. 다시 배우려면 reg.json 을 지우거나 TWIN_REG_LEARN=1
+        if self.locked:
+            return
         s = s or {}
         cx_mm = s.get('cog_static_x_mm', s.get('cog_x_mm'))
         cy_mm = s.get('cog_static_y_mm', s.get('cog_y_mm'))
@@ -432,7 +438,7 @@ class Registration:
                     pass
 
     def json(self):
-        return None if self.value is None else dict(cx=round(self.value[0], 4), cy=round(self.value[1], 4), n=len(self.est))
+        return None if self.value is None else dict(cx=round(self.value[0], 4), cy=round(self.value[1], 4), n=len(self.est), locked=self.locked)
 
 
 class Twin:
