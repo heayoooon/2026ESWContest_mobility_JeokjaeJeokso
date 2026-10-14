@@ -237,7 +237,8 @@ export function buildView(state: TwinState | null, connected: boolean): TwinView
   if (!connected || !state) {
     verdict = { level: null, word: '대기', headline: '센서 신호를 기다리는 중', detail: '', more: 0, top: null, move: null }
   } else if (!judged) {
-    verdict = { level: null, word: '판정 없음', headline: '이 기록에는 위험 판정이 없습니다', detail: '센서 값만 보여 줍니다', more: 0, top: null, move: null }
+    // 실시간: 카메라는 오는데 센서 · 판정이 아직 없다 (센서 파이 sensor_feed 가 꺼졌거나 센서 선이 빠짐)
+    verdict = { level: null, word: '판정 대기', headline: '센서 값을 기다리는 중입니다', detail: '카메라 화면만 들어오고 있어요', more: 0, top: null, move: null }
   } else {
     const bad = checks.filter((c) => c.key !== 'move' && (c.level ?? 0) > 0).sort((a, b) => weight(b) - weight(a))
     // 종합 = 센서 파이 값 (안전 여유 곱: 경고 둘이면 위험). 없으면 가장 나쁜 판정

@@ -69,7 +69,7 @@ export function Banner({ view, state, paused }: { view: TwinView; state: TwinSta
         <span className="lv3"><i />위험</span>
       </div>
       <div className="tw-meta">
-        <div className="tw-scn">{view.connected ? (state?.scenario ?? state?.run ?? '—') : '—'}</div>
+        <div className="tw-scn">{view.connected ? (state?.scenario ?? '센서 파이') : '—'}</div>
         <div className="tw-prog">
           <i style={{ transform: `scaleX(${prog})` }} />
         </div>
