@@ -7,7 +7,7 @@
                 (하중 이동을 뺀 무게중심으로 본다)
     화물 이동   주행 중 h 를 추정해 IMU 로 무게중심 변화를 예측, 실측과 비교  transfer.py
                 (허용이 가속에 따라 커지고, 최근 구간 비율과 지속 시간으로 4단계)
-    장력 N / S  N쪽 · S쪽 벨트마다 그쪽 무게로 정한 하한의 % · 상한의 %    tension.py
+    장력 N / S  N쪽 · S쪽 벨트마다 맡은 무게(벨트 위치로 나눈 몫)로 정한 하한의 % · 상한의 %    tension.py
 판정마다 Hold 로 깜빡임을 거른다(HOLD).
 
 종합 위험도(Result.level)는 적재 · 무게중심 · 장력의 단계(0~3)를 안전 여유 곱으로 합친 것이다 (overall.py).
@@ -49,7 +49,7 @@ class Result:
     load_kg: float | None       # 적재 무게 = 셀 합에서 벨트 누름을 뺀 화물 무게. IMU az 로 나누고 평활
     measured_kg: float | None   # 측정 무게 = 셀 합 그대로 (벨트 누름 포함). az 로 나누고 평활
     transfer: Transfer | None   # IMU 로 예측한 무게중심 + 추정한 하중 이동 계수(h)
-    tension_min: dict           # {장력 라벨: 그쪽 무게로 정한 장력 하한 N | None}
+    tension_min: dict           # {장력 라벨: 그 벨트가 맡은 무게로 정한 장력 하한 N | None}
     checks: list                # [Check] Analyzer.checks 순서. 판정 못 하면 level None
     level: int | None           # 종합 위험도 = 적재 · 무게중심 · 장력 단계의 안전 여유 곱 (overall.py).
                                 #   화물 이동은 안 들어간다. 하나도 판정 못 하면 None

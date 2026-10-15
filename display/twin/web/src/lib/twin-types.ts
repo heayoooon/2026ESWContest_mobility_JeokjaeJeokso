@@ -65,7 +65,7 @@ export type TwinSensors = {
   cog_mm?: { x: number | null; y: number | null } | null
   /** 가감속으로 예측한 무게중심 (mm). 실측과 차이가 크면 화물 이동 */
   cog_pred_mm?: { x: number | null; y: number | null } | null
-  /** 벨트 장력. c1 = 앞 벨트(앞쪽 두 셀 무게를 잡는다), c2 = 뒤 벨트. min_n = 그 무게로 필요한 최소 장력 */
+  /** 벨트 장력. c1 = 앞 벨트, c2 = 뒤 벨트 (화물 무게를 벨트 위치로 나눠 맡는다). min_n = 맡은 무게로 필요한 최소 장력 */
   belts?: TwinBelt[]
   /** 2026-10-08 판정: 적정 적재중량 (kg) 과 주의 · 경고 · 위험 기준 (%). load_kg = 벨트 누름을 뺀 화물 무게 */
   rated_kg?: number

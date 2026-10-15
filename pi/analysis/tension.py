@@ -1,15 +1,25 @@
 """벨트 장력 판정. N(앞)쪽 벨트와 S(뒤)쪽 벨트 2개를 따로 판정한다.
 
-벨트 배치는 HX_TENSION 순서로 정한다 (Config.belt_sides()).
-    첫 번째 장력 셀 = N쪽 벨트 -> 앞쪽 두 바닥 셀(COG_CORNERS 1 · 2번, NW+NE) 무게를 맡는다
-    두 번째 장력 셀 = S쪽 벨트 -> 뒤쪽 두 바닥 셀(COG_CORNERS 3 · 4번, SW+SE) 무게를 맡는다
-화물이 앞으로 쏠리면 N쪽 무게가 늘어 N쪽 벨트의 하한이 올라간다.
+벨트 배치는 HX_TENSION 순서로 정한다 (Config.belt_sides()). 첫 번째 장력 셀 = N쪽 벨트, 두 번째 = S쪽 벨트.
+벨트가 화물을 넘어가는 남북 위치는 BELT_N_Y / BELT_S_Y 다 (앞쪽 셀 줄에서 뒤로 잰 mm, 무게중심 Y 와 같은 좌표).
+
+벨트마다 맡는 무게 = 화물 무게를 두 벨트가 지렛대처럼 나눈 몫.
+    N 몫 = (y_S - y_c) / (y_S - y_N),   S 몫 = 1 - N 몫
+y_c 는 화물 무게중심 Y, y_N · y_S 는 벨트 위치. 몫은 0 ~ 1 로 자른다 (무게중심이 벨트 바깥이면 가까운 벨트가 전부).
+화물이 N쪽 벨트 가까이 있으면 N쪽 벨트가 더 맡아 N쪽 하한이 올라간다.
+
+벨트는 판 아래(차체)에 걸려 있어서 화물을 2 T sinα 로 누르고(total.py), 그 힘은 벨트 위치에서 바닥 셀에 실린다.
+그래서 바닥 셀로 잰 무게와 무게중심에는 벨트 누름이 섞여 있다. 누름을 벨트 위치에서 빼고 화물만 다시 낸다.
+    화물 = 셀 합 - Σ 누름,        화물 x y_c = 뒤쪽 셀 줄 합 x BED_W - Σ 누름 x 벨트 위치
+2026-10-15 전에는 벨트가 셀 줄 바로 위에 있다고 보고 앞쪽 두 셀 - N 누름, 뒤쪽 두 셀 - S 누름을 썼다.
+S쪽 벨트가 판 가운데 쪽에 있으면 S 누름 일부가 앞쪽 셀에 실리는데 그걸 못 빼서, S 벨트를 조일수록 N 하한이 올라갔다.
+BELT_N_Y = 0, BELT_S_Y = BED_W(기본값)이면 예전 계산과 같다.
 
 하한 = EN 12195-1:2010 식 10 (위로 감기 top-over lashing) 을 장력으로 푼 것.
 화물이 미끄러지지 않으려면 바닥 마찰이 관성력보다 커야 한다. 벨트를 화물 위로 감아 당기면
 양쪽 끈이 T sinα 씩 화물을 눌러 마찰을 늘린다. 표준은 여기에 안전계수 fs 를 곱한다.
     2 μ T sinα >= m g (A - μ) fs        ->        T >= m g (A - μ) fs / (2 μ sinα)
-m = 그쪽 무게(kg), A = 버텨야 할 가감속(TENSION_A, G), μ = TENSION_MU, α = TENSION_ANGLE, fs = SAFETY_FACTOR.
+m = 그 벨트가 맡은 무게(kg), A = 버텨야 할 가감속(TENSION_A, G), μ = TENSION_MU, α = TENSION_ANGLE, fs = SAFETY_FACTOR.
 마찰만으로 버티면(A <= μ) 식은 0 이 되지만, 그래도 진동으로 밀리지 않게 1kg 당 MIN_N_PER_KG 는 둔다
 (EN 12195-1 4.1). 그리고 화물이 가벼워도 TENSION_FLOOR 밑으로는 안 내린다.
 
@@ -25,10 +35,8 @@ EN 12195-1 과 IRU 가이드는 조임 장력을 LC 의 50% 까지로 둔다.
 100% · 50% 는 근거가 있는 값이고, 75% 는 그 사이 가운데다 (total.py 의 125% 와 같은 방식).
 판정 근거 정리: analysis/tension_EN12195-1.md
 
-그쪽 셀 무게에는 이 벨트가 화물을 누른 몫(장력 x 2 sinα, Config.belt_push_g_per_n())이 들어 있으므로 빼고 쓴다.
-안 빼면 세게 조일수록 그쪽이 무거워져 하한도 같이 올라간다 (2026-10-04: S쪽 c2 9N 이면 1.9kg 무겁게 잡힘).
-가감속 중에는 앞뒤 셀 무게가 하중 이동으로 출렁이므로 그쪽 무게는 길게(SIDE_SMOOTH_S) 평활한다.
-그쪽 무게가 SIDE_MIN_KG 보다 가벼우면 잡을 화물이 없으니 하한은 내지 않고 상한만 본다.
+가감속 중에는 하중 이동으로 무게중심이 출렁이므로 화물 무게와 무게중심은 길게(SIDE_SMOOTH_S) 평활한다.
+맡은 무게가 SIDE_MIN_KG 보다 가벼우면 잡을 화물이 없으니 하한은 내지 않고 상한만 본다.
 """
 import math
 
@@ -43,18 +51,23 @@ LOW_DANGER_PCT = 50     # 이 % 보다 낮으면 위험 (풀림)
 HIGH_CAUTION_PCT = 50   # 장력이 상한(TENSION_MAX)의 이 % 를 넘으면 주의 (과조임)
 HIGH_WARNING_PCT = 75   # 이 % 를 넘으면 경고
 HIGH_DANGER_PCT = 100   # 이 % 를 넘으면 위험 (상한 넘음)
-SIDE_SMOOTH_S = 3.0     # 그쪽 무게 평활 시정수(초). 가감속 때 하중 이동으로 출렁이는 걸 누른다
+SIDE_SMOOTH_S = 3.0     # 화물 무게 · 무게중심 평활 시정수(초). 가감속 때 하중 이동으로 출렁이는 걸 누른다
 TENSION_SMOOTH_S = 0.3  # 장력 평활 시정수(초)
-SIDE_MIN_KG = 0.2       # 그쪽 무게가 이보다 가벼우면 화물 없음
+SIDE_MIN_KG = 0.2       # 맡은 무게가 이보다 가벼우면 화물 없음
 
 G = 9.80665             # m/s^2 (acquisition/config.py 와 같은 값)
 
 
 def need_per_kg(cfg):
-    """그쪽 화물 1kg 을 붙잡는 데 드는 벨트 장력(N/kg). 위 식을 m = 1kg 으로 푼 값, 최소 MIN_N_PER_KG."""
+    """그 벨트가 맡은 화물 1kg 을 붙잡는 데 드는 벨트 장력(N/kg). 위 식을 m = 1kg 으로 푼 값, 최소 MIN_N_PER_KG."""
     sin_a = math.sin(math.radians(cfg.tension_angle))
     slide = G * (cfg.tension_a - cfg.tension_mu) * SAFETY_FACTOR / (2 * cfg.tension_mu * sin_a)
     return max(MIN_N_PER_KG, slide)
+
+
+def lever_share(y_c, y_self, y_other):
+    """무게중심 y_c 인 화물을 y_self · y_other 위치의 두 벨트가 지렛대처럼 나눠 맡을 때 y_self 벨트의 몫(0~1)."""
+    return min(1.0, max(0.0, (y_other - y_c) / (y_other - y_self)))
 
 
 def check_name(side, label):
@@ -86,38 +99,72 @@ def high_level(percent):
 
 class TensionCheck:
     def __init__(self, cfg):
-        # {장력 라벨: (쪽 이름 N / S, 그 벨트가 맡는 바닥 셀 라벨들)}
+        # {장력 라벨: (쪽 이름 N / S / 전체, 벨트 남북 위치. 전체면 None)}
         self.sides = cfg.belt_sides()
-        # 그쪽 화물 1kg 당 필요한 장력(N/kg)
+        weight, _, corners = cfg.roles()
+        # 화물 무게를 낼 바닥 셀, 그중 뒤쪽 셀 줄(무게중심 Y 용). 모서리를 모르면 바닥 셀 전부
+        self.cells = list(corners) if corners else list(weight)
+        self.rear = list(corners[2:]) if corners else []
+        # 앞뒤 셀 줄 간격. 벨트 위치와 같은 단위 (mm, BED_W 가 없으면 %)
+        self.width = cfg.bed_w or 100.0
+        # 위치를 아는 벨트(N · S)마다 (내 위치, 짝 벨트 위치)
+        located = [(label, y) for label, (_, y) in self.sides.items() if y is not None]
+        self.pair = {label: (y, located[1 - i][1]) for i, (label, y) in enumerate(located)}
+        # 맡은 화물 1kg 당 필요한 장력(N/kg)
         self.per_kg = need_per_kg(cfg)
-        # 벨트 장력 1N 이 그쪽 바닥 셀 무게에 더하는 무게(g) = 2 sinα / g x 1000
+        # 벨트 장력 1N 이 바닥 셀 무게에 더하는 무게(g) = 2 sinα / g x 1000
         self.push_g_per_n = cfg.belt_push_g_per_n()
         # 하한의 최솟값(N), 상한(N)
         self.floor_n, self.max_n = cfg.tension_floor, cfg.tension_max
-        # 벨트마다 평활기. 그쪽 무게(kg)용 / 장력(N)용
-        self.smooth_side = {label: Ema(SIDE_SMOOTH_S) for label in self.sides}
+        # 평활기. 화물 무게(kg) · 화물 무게중심 Y 는 길게, 장력(N)은 벨트마다 짧게
+        self.smooth_cargo = Ema(SIDE_SMOOTH_S)
+        self.smooth_y = Ema(SIDE_SMOOTH_S)
         self.smooth_tension = {label: Ema(TENSION_SMOOTH_S) for label in self.sides}
+
+    def cargo(self, t, frame, push_g, imu):
+        """push_g = {장력 라벨: 그 벨트가 누른 무게 g}.
+        -> (화물 무게 kg, 화물 무게중심 Y). 바닥 셀 값이 없으면 (None, None).
+        위치를 아는 벨트가 없거나 화물이 거의 없으면 무게중심은 None."""
+        cell_g = [frame.load_g.get(c) for c in self.cells]
+        if None in cell_g:
+            return None, None
+        # 화물 무게(kg) = 셀 합 - 벨트 누름 전부. az 로 나눠 위아래 출렁임을 빼고 길게 평활
+        cargo_kg = self.smooth_cargo(t, static_g(sum(cell_g) - sum(push_g.values()), imu) / 1000)
+        if not self.pair:
+            return cargo_kg, None
+        # 뒤쪽 셀 줄 합 x 간격 = 화물 x y_c + Σ 누름 x 벨트 위치. 위치를 모르는 벨트(세 번째부터)는 무게중심을 누른다고 본다.
+        # 화물 몫도 셀처럼 az 배로 출렁이지만 위아래가 같이 커져서 y_c 에서는 지워진다
+        moment = sum(frame.load_g[c] for c in self.rear) * self.width - sum(
+            push_g[label] * y for label, (y, _) in self.pair.items())
+        loaded_g = sum(cell_g) - sum(push_g[label] for label in self.pair)
+        if loaded_g < SIDE_MIN_KG * 1000:
+            return cargo_kg, None
+        return cargo_kg, self.smooth_y(t, moment / loaded_g)
 
     def __call__(self, t, frame, imu):
         """t = 경과(초), frame = 이번 프레임, imu = 차체 IMU 값 (없으면 None).
         -> ({장력 라벨: 하한 N 또는 None}, [Check] 벨트마다 N쪽, S쪽 순서)."""
+        # 이번 프레임 장력(N). 보정 전이거나 응답이 없으면 None
+        now_n = {label: frame.tension_n.get(label) for label in self.sides}
+        # 벨트마다 화물을 눌러 바닥 셀에 더해진 무게(g). 장력 값이 없으면 못 빼고 0 (무겁게 나와 하한이 올라가는 안전한 쪽)
+        push_g = {label: self.push_g_per_n * max(0.0, n) if n is not None else 0.0 for label, n in now_n.items()}
+        cargo_kg, y_c = self.cargo(t, frame, push_g, imu)
+
         mins, checks = {}, []
-        for label, (side, cells) in self.sides.items():
+        for label, (side, y) in self.sides.items():
             name = check_name(side, label)
 
-            # 그쪽 바닥 셀마다 잰 무게(g). 하나라도 없으면 그쪽 무게를 못 낸다
-            cell_g = [frame.load_g.get(cell) for cell in cells]
-            # 이번 프레임 장력(N). 보정 전이거나 응답이 없으면 None
-            now_n = frame.tension_n.get(label)
-            # 이 벨트가 화물을 눌러 그쪽 셀에 더해진 무게(g). 장력 값이 없으면 못 빼고 무겁게 둔다 (하한이 올라가 안전한 쪽)
-            push_g = self.push_g_per_n * max(0.0, now_n) if now_n is not None else 0.0
-            # 그쪽 무게(kg) = 셀 합 - 벨트 누름. az 로 나눠 위아래 출렁임을 빼고 길게 평활
-            side_g = None if None in cell_g else static_g(sum(cell_g) - push_g, imu)
-            side_kg = self.smooth_side[label](t, None if side_g is None else side_g / 1000)
+            # 이 벨트가 맡은 무게(kg). 전체 벨트는 화물 전부, N · S 벨트는 무게중심 위치로 나눈 몫
+            if cargo_kg is None:
+                side_kg = None
+            elif label not in self.pair:
+                side_kg = cargo_kg
+            else:
+                side_kg = cargo_kg * lever_share(y_c, *self.pair[label]) if y_c is not None else 0.0
             # 벨트 장력(N). 짧게 평활
-            belt_n = self.smooth_tension[label](t, now_n)
+            belt_n = self.smooth_tension[label](t, now_n[label])
 
-            # 하한(N)은 그쪽 무게로만 정해진다. 장력 셀 값이 없어도(보정 전) 하한은 낸다
+            # 하한(N)은 맡은 무게로만 정해진다. 장력 셀 값이 없어도(보정 전) 하한은 낸다
             if side_kg is not None and side_kg >= SIDE_MIN_KG:
                 need_n = max(self.floor_n, self.per_kg * side_kg)
             else:
@@ -125,14 +172,19 @@ class TensionCheck:
             mins[label] = need_n
 
             if side_kg is None:
-                checks.append(Check(label, name, None, "%s 값 없음" % "+".join(cells)))
+                missing = [c for c in self.cells if frame.load_g.get(c) is None]
+                checks.append(Check(label, name, None, "%s 값 없음" % ",".join(missing)))
                 continue
             if belt_n is None:
                 checks.append(Check(label, name, None, "장력 셀 값 없음"))
                 continue
-            where = "%s %.1fkg" % ("+".join(cells), side_kg)       # 그쪽 셀과 무게. 이유 끝에 붙인다
+            # 맡은 무게. 이유 끝에 붙인다
+            if label in self.pair and cargo_kg > 0:
+                where = "맡은 무게 %.1fkg = 화물 %.1fkg 의 %.0f%%" % (side_kg, cargo_kg, 100 * side_kg / cargo_kg)
+            else:
+                where = "맡은 무게 %.1fkg" % side_kg
 
-            # 낮은 쪽: 장력이 하한의 몇 % 인가. 그쪽에 화물이 없으면 안 본다
+            # 낮은 쪽: 장력이 하한의 몇 % 인가. 맡은 화물이 없으면 안 본다
             low_pct = 100 * belt_n / need_n if need_n else None
             low, low_limit = low_level(low_pct) if low_pct is not None else (OK, None)
             # 높은 쪽: 장력이 상한의 몇 % 인가
