@@ -8,6 +8,7 @@ SimCamera 는 D435i 트윈 노드(twin/pi_twin_node.py)의 UDP 패킷을 흉내 
     40초 주기   0~6s 정차   6~10s 가속   12~16s 좌회전
                 16~19s 제동   24~29s 우회전   34~38s 감속 정차
     화물 12kg, 무게중심 높이 150mm. 가감속하면 그만큼 하중이 옮겨지고, 로드셀은 IMU 보다 0.2초 늦다
+    벨트 장력은 화물을 2 T sinα 로 눌러 벨트 자리(BELT_N_Y / BELT_S_Y)에서 바닥 셀에 더해진다
     18초에 한 번  제동하다 화물이 앞으로 밀리고(무게중심 이동) T1(N쪽) 벨트가 느슨해진다
     41~45초      정차 중에 4kg 을 더 실었다가 내린다 (최대 15kg 넘음)
     -> 판정(analysis/)의 적재 · 무게중심 · 화물 이동 · 장력 알림이 다 한 번씩 뜬다
@@ -86,6 +87,10 @@ class SimHX711Bus:
         self.labels = list(cfg.hx_labels)
         self.n = len(self.labels)
         _, self.tension, self.corners = cfg.roles(self.labels)
+        # 벨트는 장력 x 2 sinα / g 만큼 화물을 눌러 바닥 셀에 더한다. 그 남북 자리(0~1, 앞 -> 뒤)에서 누른다 (analysis/cog.py)
+        width = cfg.bed_w or 100.0
+        self.belt_y = {l: y / width for l, (_, y) in cfg.belt_sides().items() if y is not None}
+        self.push_g_per_n = cfg.belt_push_g_per_n()
         self.period = 1.0 / max(1, cfg.hx_rate)
         self.scn = scenario
         self.rng = random.Random(1)
@@ -131,15 +136,21 @@ class SimHX711Bus:
 
     def _grams(self, st):
         g = {}
+        tension = {l: st["t1"] if i == 0 else st["t2"] for i, l in enumerate(self.tension)}
         if self.corners:                                # 네 모서리에 하중을 나눈다
-            x, y, m = st["x"], st["y"], st["load_g"]
+            # 화물은 무게중심에서, 벨트 누름은 벨트 자리(동서로는 화물 가운데)에서 누른다
+            loads = [(st["load_g"], st["x"], st["y"])] + [
+                (self.push_g_per_n * max(0.0, tension[l]), st["cargo_x"], y) for l, y in self.belt_y.items()]
             fl, fr, rl, rr = self.corners
-            g[fl] = m * (1 - x) * (1 - y)
-            g[fr] = m * x * (1 - y)
-            g[rl] = m * (1 - x) * y
-            g[rr] = m * x * y
-        for i, l in enumerate(self.tension):
-            g[l] = (st["t1"] if i == 0 else st["t2"]) / G_TO_N
+            for c in self.corners:
+                g[c] = 0.0
+            for m, x, y in loads:
+                g[fl] += m * (1 - x) * (1 - y)
+                g[fr] += m * x * (1 - y)
+                g[rl] += m * (1 - x) * y
+                g[rr] += m * x * y
+        for l, n in tension.items():
+            g[l] = n / G_TO_N
         return g
 
     def close(self):

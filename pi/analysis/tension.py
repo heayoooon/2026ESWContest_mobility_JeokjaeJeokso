@@ -9,8 +9,8 @@ y_c 는 화물 무게중심 Y, y_N · y_S 는 벨트 위치. 몫은 0 ~ 1 로 �
 화물이 N쪽 벨트 가까이 있으면 N쪽 벨트가 더 맡아 N쪽 하한이 올라간다.
 
 벨트는 판 아래(차체)에 걸려 있어서 화물을 2 T sinα 로 누르고(total.py), 그 힘은 벨트 위치에서 바닥 셀에 실린다.
-그래서 바닥 셀로 잰 무게와 무게중심에는 벨트 누름이 섞여 있다. 누름을 벨트 위치에서 빼고 화물만 다시 낸다.
-    화물 = 셀 합 - Σ 누름,        화물 x y_c = 뒤쪽 셀 줄 합 x BED_W - Σ 누름 x 벨트 위치
+그래서 바닥 셀로 잰 무게와 무게중심에는 벨트 누름이 섞여 있다. 누름을 빼고 화물만 다시 낸다.
+    화물 = 셀 합 - Σ 누름,        y_c = 누름을 벨트 위치에서 뺀 무게중심 Y (cog.py, 무게중심 판정과 같은 값)
 2026-10-15 전에는 벨트가 셀 줄 바로 위에 있다고 보고 앞쪽 두 셀 - N 누름, 뒤쪽 두 셀 - S 누름을 썼다.
 S쪽 벨트가 판 가운데 쪽에 있으면 S 누름 일부가 앞쪽 셀에 실리는데 그걸 못 빼서, S 벨트를 조일수록 N 하한이 올라갔다.
 BELT_N_Y = 0, BELT_S_Y = BED_W(기본값)이면 예전 계산과 같다.
@@ -40,6 +40,7 @@ EN 12195-1 과 IRU 가이드는 조임 장력을 LC 의 50% 까지로 둔다.
 """
 import math
 
+from analysis.cog import belt_press
 from analysis.risk import CAUTION, DANGER, OK, WARNING, Check, Ema, static_g
 
 # --- 바꿔도 되는 기준값 ------------------------------------------------------
@@ -102,11 +103,8 @@ class TensionCheck:
         # {장력 라벨: (쪽 이름 N / S / 전체, 벨트 남북 위치. 전체면 None)}
         self.sides = cfg.belt_sides()
         weight, _, corners = cfg.roles()
-        # 화물 무게를 낼 바닥 셀, 그중 뒤쪽 셀 줄(무게중심 Y 용). 모서리를 모르면 바닥 셀 전부
+        # 화물 무게를 낼 바닥 셀. 모서리를 모르면 바닥 셀 전부
         self.cells = list(corners) if corners else list(weight)
-        self.rear = list(corners[2:]) if corners else []
-        # 앞뒤 셀 줄 간격. 벨트 위치와 같은 단위 (mm, BED_W 가 없으면 %)
-        self.width = cfg.bed_w or 100.0
         # 위치를 아는 벨트(N · S)마다 (내 위치, 짝 벨트 위치)
         located = [(label, y) for label, (_, y) in self.sides.items() if y is not None]
         self.pair = {label: (y, located[1 - i][1]) for i, (label, y) in enumerate(located)}
@@ -121,34 +119,29 @@ class TensionCheck:
         self.smooth_y = Ema(SIDE_SMOOTH_S)
         self.smooth_tension = {label: Ema(TENSION_SMOOTH_S) for label in self.sides}
 
-    def cargo(self, t, frame, push_g, imu):
-        """push_g = {장력 라벨: 그 벨트가 누른 무게 g}.
+    def cargo(self, t, frame, push_g, c, imu):
+        """push_g = {장력 라벨: 그 벨트가 누른 무게 g}, c = 벨트 누름을 뺀 무게중심 (cog.py, 없으면 None).
         -> (화물 무게 kg, 화물 무게중심 Y). 바닥 셀 값이 없으면 (None, None).
-        위치를 아는 벨트가 없거나 화물이 거의 없으면 무게중심은 None."""
-        cell_g = [frame.load_g.get(c) for c in self.cells]
+        위치를 아는 벨트가 없거나 무게중심이 없으면(화물이 거의 없음) 무게중심은 None."""
+        cell_g = [frame.load_g.get(label) for label in self.cells]
         if None in cell_g:
             return None, None
         # 화물 무게(kg) = 셀 합 - 벨트 누름 전부. az 로 나눠 위아래 출렁임을 빼고 길게 평활
         cargo_kg = self.smooth_cargo(t, static_g(sum(cell_g) - sum(push_g.values()), imu) / 1000)
-        if not self.pair:
+        if not self.pair or c is None:
             return cargo_kg, None
-        # 뒤쪽 셀 줄 합 x 간격 = 화물 x y_c + Σ 누름 x 벨트 위치. 위치를 모르는 벨트(세 번째부터)는 무게중심을 누른다고 본다.
-        # 화물 몫도 셀처럼 az 배로 출렁이지만 위아래가 같이 커져서 y_c 에서는 지워진다
-        moment = sum(frame.load_g[c] for c in self.rear) * self.width - sum(
-            push_g[label] * y for label, (y, _) in self.pair.items())
-        loaded_g = sum(cell_g) - sum(push_g[label] for label in self.pair)
-        if loaded_g < SIDE_MIN_KG * 1000:
-            return cargo_kg, None
-        return cargo_kg, self.smooth_y(t, moment / loaded_g)
+        # 화물 몫이 셀처럼 az 배로 출렁여도 무게중심에서는 위아래가 같이 커져 지워진다. 하중 이동 출렁임만 길게 평활한다
+        return cargo_kg, self.smooth_y(t, c.y)
 
-    def __call__(self, t, frame, imu):
-        """t = 경과(초), frame = 이번 프레임, imu = 차체 IMU 값 (없으면 None).
+    def __call__(self, t, frame, imu, c):
+        """t = 경과(초), frame = 이번 프레임, imu = 차체 IMU 값 (없으면 None),
+        c = 벨트 누름을 벨트 위치에서 뺀 무게중심 (cog.py 의 cog(), 없으면 None).
         -> ({장력 라벨: 하한 N 또는 None}, [Check] 벨트마다 N쪽, S쪽 순서)."""
         # 이번 프레임 장력(N). 보정 전이거나 응답이 없으면 None
         now_n = {label: frame.tension_n.get(label) for label in self.sides}
         # 벨트마다 화물을 눌러 바닥 셀에 더해진 무게(g). 장력 값이 없으면 못 빼고 0 (무겁게 나와 하한이 올라가는 안전한 쪽)
-        push_g = {label: self.push_g_per_n * max(0.0, n) if n is not None else 0.0 for label, n in now_n.items()}
-        cargo_kg, y_c = self.cargo(t, frame, push_g, imu)
+        push_g = belt_press(frame, self.sides, self.push_g_per_n)
+        cargo_kg, y_c = self.cargo(t, frame, push_g, c, imu)
 
         mins, checks = {}, []
         for label, (side, y) in self.sides.items():
