@@ -4,11 +4,13 @@
 기준값은 환경변수 (acquisition/config.py), 적재 · 장력 단계 기준만 total.py · tension.py 맨 위 상수
     적재        셀 합에서 벨트 누름을 뺀 화물 무게 -> 적정 적재중량의 %      total.py
     무게중심    판 가장자리에 얼마나 붙었나 COG_CAUTION / COG_WARNING / COG_DANGER   cog.py zone()
-                (하중 이동을 뺀 무게중심으로 본다)
+                (벨트 누름과 하중 이동을 뺀 무게중심으로 본다)
     화물 이동   주행 중 h 를 추정해 IMU 로 무게중심 변화를 예측, 실측과 비교  transfer.py
                 (허용이 가속에 따라 커지고, 최근 구간 비율과 지속 시간으로 4단계)
-    장력 N / S  N쪽 · S쪽 벨트마다 그쪽 무게로 정한 하한의 % · 상한의 %    tension.py
+    장력 N / S  N쪽 · S쪽 벨트마다 맡은 무게(벨트 위치로 나눈 몫)로 정한 하한의 % · 상한의 %    tension.py
 판정마다 Hold 로 깜빡임을 거른다(HOLD).
+무게중심(Result.cog)은 벨트 누름을 벨트 위치에서 뺀 화물 무게중심이다 (cog.py). 무게중심 · 화물 이동 · 장력 판정과
+화면 위치가 다 이 값을 쓴다. 그래서 화물은 그대로인데 장력만 바뀌면 무게중심이 안 움직인다.
 
 종합 위험도(Result.level)는 적재 · 무게중심 · 장력의 단계(0~3)를 안전 여유 곱으로 합친 것이다 (overall.py).
 판정 하나가 위험이면 종합도 위험이고, 여러 판정이 같이 나쁘면 한 단계 위로 올라간다 (경고 둘 -> 위험, 주의 셋 -> 경고).
@@ -20,7 +22,7 @@
 """
 from dataclasses import dataclass
 
-from analysis.cog import CoG, cog, total_load, zone
+from analysis.cog import CoG, belt_press, cog, total_load, zone
 from analysis.overall import overall
 from analysis.risk import Check, Hold
 from analysis.tension import TensionCheck, check_name
@@ -45,11 +47,11 @@ def check_list(cfg):
 @dataclass
 class Result:
     total_g: float | None       # 바닥 셀 합. 하나라도 값이 없으면 None
-    cog: CoG | None             # 무게중심. 모서리 값이 없거나 하중이 작으면 None
+    cog: CoG | None             # 화물 무게중심 = 벨트 누름을 벨트 위치에서 뺀 값. 모서리 값이 없거나 하중이 작으면 None
     load_kg: float | None       # 적재 무게 = 셀 합에서 벨트 누름을 뺀 화물 무게. IMU az 로 나누고 평활
     measured_kg: float | None   # 측정 무게 = 셀 합 그대로 (벨트 누름 포함). az 로 나누고 평활
     transfer: Transfer | None   # IMU 로 예측한 무게중심 + 추정한 하중 이동 계수(h)
-    tension_min: dict           # {장력 라벨: 그쪽 무게로 정한 장력 하한 N | None}
+    tension_min: dict           # {장력 라벨: 그 벨트가 맡은 무게로 정한 장력 하한 N | None}
     checks: list                # [Check] Analyzer.checks 순서. 판정 못 하면 level None
     level: int | None           # 종합 위험도 = 적재 · 무게중심 · 장력 단계의 안전 여유 곱 (overall.py).
                                 #   화물 이동은 안 들어간다. 하나도 판정 못 하면 None
@@ -62,6 +64,9 @@ class Analyzer:
         _, _, self.corners = cfg.roles()
         self.bed = (cfg.bed_l, cfg.bed_w) if cfg.bed_l else None
         self.imu = cfg.judge_imu or None
+        # 위치를 아는 벨트(N · S)마다 남북 위치. 무게중심에서 그 벨트 누름을 그 위치로 뺀다
+        self.belt_y = {label: y for label, (_, y) in cfg.belt_sides().items() if y is not None}
+        self.push_g_per_n = cfg.belt_push_g_per_n()
         self.zone = (cfg.cog_caution, cfg.cog_warning, cfg.cog_danger)
         self.load = TotalLoadCheck(cfg)
         self.transfer = TransferCheck(cfg, self.bed) if self.corners else None
@@ -75,7 +80,8 @@ class Analyzer:
         t = frame.t_s
         imu = frame.imu.get(self.imu) if self.imu else None
         total = total_load(frame)
-        c = cog(frame, self.corners, self.bed)
+        push = belt_press(frame, self.belt_y, self.push_g_per_n)
+        c = cog(frame, self.corners, self.bed, [(push[label], y) for label, y in self.belt_y.items()])
 
         load_kg, measured_kg, check = self.load(t, frame, imu)
         checks = [check]
@@ -86,7 +92,7 @@ class Analyzer:
             still = CoG(tr.static_x, tr.static_y, c.unit) if tr and c else c
             checks.append(zone(still, self.bed, *self.zone))
             checks.append(move)
-        mins, more = self.tension(t, frame, imu)
+        mins, more = self.tension(t, frame, imu, c)
         checks += more
 
         checks = [self.holds[ch.key](t, ch) for ch in checks]

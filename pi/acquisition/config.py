@@ -26,8 +26,14 @@ HX711
   BED_L        앞왼-앞오 셀 사이 거리(mm)  } 둘 다 주면 무게중심을 mm 로,
   BED_W        앞왼-뒤왼 셀 사이 거리(mm)  } 안 주면 % 로 적는다 (50 = 가운데)
                HX_TENSION 순서가 곧 벨트 위치다: 첫 번째 = N(앞)쪽 벨트, 두 번째 = S(뒤)쪽 벨트.
-               N쪽 벨트는 앞쪽 두 셀(COG_CORNERS 1·2번), S쪽은 뒤쪽 두 셀(3·4번) 무게로 장력 하한을 정한다.
-               벨트가 하나뿐이면 네 셀 전부
+               화물 무게를 무게중심 위치에 따라 두 벨트가 지렛대처럼 나눠 맡고, 그 몫으로 장력 하한을 정한다.
+               벨트가 하나뿐이면 화물 전부
+  BELT_N_Y     N쪽 벨트가 화물을 넘어가는 남북 위치(mm). 앞쪽 셀 줄(앞왼-앞오)에서 뒤쪽으로 잰 거리,
+               무게중심 Y 와 같은 좌표다. 셀 줄 밖이면 음수 / BED_W 보다 큰 값      기본 0 (앞쪽 셀 줄 위)
+  BELT_S_Y     S쪽 벨트 위치(mm), 같은 기준                    기본 BED_W (뒤쪽 셀 줄 위)
+               벨트가 누르는 힘을 그 위치에서 빼서 화물 무게중심을 내고(무게중심 · 화물 이동 판정도 이 값),
+               두 벨트 사이 어디에 무게중심이 있는지로 몫을 나눈다.
+               둘 다 기본값이면 몫은 예전 계산(앞쪽 두 셀 무게 / 뒤쪽 두 셀 무게)과 같다. BED_L/BED_W 가 있어야 쓴다
 
 판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (판정 4개 다 쓴다)
   적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
@@ -52,9 +58,9 @@ HX711
                화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 이 값으로 돌아간다
   JUDGE_IMU    하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
-  TENSION_MU   화물-바닥 마찰계수                                기본 0.4
+  TENSION_MU   화물-바닥 마찰계수                                기본 0.5
   TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
-               장력 하한(N) = 그쪽 무게(kg) x g(A - MU) fs / (2 MU sin ANGLE)   (EN 12195-1 식 10, 위로 감기)
+               장력 하한(N) = 그 벨트가 맡은 무게(kg) x g(A - MU) fs / (2 MU sin ANGLE)   (EN 12195-1 식 10, 위로 감기)
                하한의 100% 밑 주의, 75% 밑 경고, 50% 밑 위험 (analysis/tension.py)
                벨트가 화물을 누르는 힘(장력 x 2 sin ANGLE)은 바닥 셀에 더해지므로 적재 무게 ·
                장력 하한을 낼 때 빼는 데도 이 각을 쓴다
@@ -140,6 +146,8 @@ class Config:
         self.cog_corners = _str_list("COG_CORNERS", "FL,FR,RL,RR")
         self.bed_l = _float("BED_L", 0) or None
         self.bed_w = _float("BED_W", 0) or None
+        self.belt_n_y = _float("BELT_N_Y", 0)
+        self.belt_s_y = _float("BELT_S_Y", self.bed_w or 0)
 
         # --- MPU-6050 ----------------------------------------------------
         self.imu_bus = _int("IMU_BUS", 1)
@@ -168,7 +176,7 @@ class Config:
         self.cog_h = _float("COG_H", 190) or None
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
-        self.tension_mu = _float("TENSION_MU", 0.4)
+        self.tension_mu = _float("TENSION_MU", 0.5)
         self.tension_angle = _float("TENSION_ANGLE", 90)
         self.tension_floor = _float("TENSION_FLOOR", 2)
         self.tension_max = _float("TENSION_MAX", 80)
@@ -228,6 +236,11 @@ class Config:
             raise SystemExit("BED_L 과 BED_W 는 둘 다 주거나 둘 다 비운다")
         if self.bed_l is not None and (self.bed_l < 0 or self.bed_w < 0):
             raise SystemExit("BED_L / BED_W 는 양수(mm)")
+        if self.bed_w is None and (_str("BELT_N_Y", "") or _str("BELT_S_Y", "")):
+            raise SystemExit("BELT_N_Y / BELT_S_Y 는 mm 라 BED_L / BED_W 도 줘야 한다")
+        if self.bed_w is not None and not self.belt_n_y < self.belt_s_y:
+            raise SystemExit("BELT_N_Y < BELT_S_Y (mm, 앞쪽 셀 줄에서 뒤로 잰 거리): %g, %g"
+                             % (self.belt_n_y, self.belt_s_y))
         if not 0 <= self.cog_danger < self.cog_warning < self.cog_caution < 50:
             raise SystemExit("0 <= COG_DANGER < COG_WARNING < COG_CAUTION < 50 (가장자리에서 셀 간격 %%): %g, %g, %g"
                              % (self.cog_danger, self.cog_warning, self.cog_caution))
@@ -261,14 +274,15 @@ class Config:
         return weight, tension, corners
 
     def belt_sides(self):
-        """{장력 라벨: (쪽 이름, 그 벨트가 맡는 바닥 셀들)}. HX_TENSION 순서대로
-        첫 번째 = ("N", 앞쪽 두 셀), 두 번째 = ("S", 뒤쪽 두 셀).
-        벨트가 하나뿐이거나 세 번째부터는 ("전체", 네 셀 전부). 모서리를 모르면 바닥 셀 전부."""
-        weight, tension, corners = self.roles()
-        if not corners:
-            return {t: ("전체", list(weight)) for t in tension}
-        sides = [("N", list(corners[:2])), ("S", list(corners[2:]))] if len(tension) > 1 else []
-        return {t: sides[i] if i < len(sides) else ("전체", list(corners)) for i, t in enumerate(tension)}
+        """{장력 라벨: (쪽 이름, 벨트 남북 위치)}. HX_TENSION 순서대로 첫 번째 = ("N", BELT_N_Y), 두 번째 = ("S", BELT_S_Y).
+        위치는 무게중심 Y 와 같은 좌표다 (앞쪽 셀 줄 0 -> 뒤쪽 셀 줄 BED_W mm. BED_W 가 없으면 셀 줄 위로 보고 0 / 100 %).
+        벨트가 하나뿐이거나 세 번째부터는 ("전체", None) = 화물 전부를 맡는다. 모서리를 몰라도 ("전체", None)."""
+        _, tension, corners = self.roles()
+        if not corners or len(tension) < 2:
+            return {t: ("전체", None) for t in tension}
+        rows = (self.belt_n_y, self.belt_s_y) if self.bed_w else (0.0, 100.0)
+        sides = [("N", rows[0]), ("S", rows[1])]
+        return {t: sides[i] if i < len(sides) else ("전체", None) for i, t in enumerate(tension)}
 
     def belt_push_g_per_n(self):
         """벨트 장력 1N 이 바닥 셀 합에 더하는 무게(g). 화물 위로 감은 벨트는 양쪽 끈이
@@ -351,9 +365,11 @@ class Config:
                 "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
         sides = self.belt_sides()
         if sides:
-            lines.append("       장력  하한 = 쪽 무게(그 벨트 누름 뺌) x %.2f N/kg (fs %g, 최소 %gN)  %s" % (
+            unit = "mm" if self.bed_w else "%"
+            lines.append("       장력  하한 = 맡은 무게(벨트 누름 뺀 화물을 두 벨트가 지렛대로 나눔) x %.2f N/kg (fs %g, 최소 %gN)  %s" % (
                 tension.need_per_kg(self), tension.SAFETY_FACTOR, self.tension_floor,
-                "  ".join("%s쪽 %s=%s" % (side, t, "+".join(c)) for t, (side, c) in sides.items())))
+                "  ".join("%s쪽 %s%s" % (side, t, "" if y is None else " Y %g%s" % (y, unit))
+                          for t, (side, y) in sides.items())))
             lines.append("             하한의 %d%% 밑 주의, %d%% 경고, %d%% 위험 / 상한 %gN 의 %d%% 넘으면 주의, %d%% 경고, %d%% 위험" % (
                 tension.LOW_CAUTION_PCT, tension.LOW_WARNING_PCT, tension.LOW_DANGER_PCT, self.tension_max,
                 tension.HIGH_CAUTION_PCT, tension.HIGH_WARNING_PCT, tension.HIGH_DANGER_PCT))
