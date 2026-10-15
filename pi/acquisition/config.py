@@ -57,7 +57,7 @@ HX711
                화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 이 값으로 돌아간다
   JUDGE_IMU    하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
-  TENSION_MU   화물-바닥 마찰계수                                기본 0.4
+  TENSION_MU   화물-바닥 마찰계수                                기본 0.5
   TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
                장력 하한(N) = 그 벨트가 맡은 무게(kg) x g(A - MU) fs / (2 MU sin ANGLE)   (EN 12195-1 식 10, 위로 감기)
                하한의 100% 밑 주의, 75% 밑 경고, 50% 밑 위험 (analysis/tension.py)
@@ -175,7 +175,7 @@ class Config:
         self.cog_h = _float("COG_H", 190) or None
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
-        self.tension_mu = _float("TENSION_MU", 0.4)
+        self.tension_mu = _float("TENSION_MU", 0.5)
         self.tension_angle = _float("TENSION_ANGLE", 90)
         self.tension_floor = _float("TENSION_FLOOR", 2)
         self.tension_max = _float("TENSION_MAX", 80)

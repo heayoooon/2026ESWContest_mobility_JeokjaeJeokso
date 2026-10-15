@@ -20,7 +20,7 @@
 from analysis.risk import CAUTION, DANGER, OK, WARNING, Check, Ema, static_g
 
 # --- 바꿔도 되는 기준값 ------------------------------------------------------
-RATED_KG = 10.0         # 적정 적재중량(kg). 회의에서 바뀌면 여기만 고친다
+RATED_KG = 15.0         # 적정 적재중량(kg). 회의에서 바뀌면 여기만 고친다 (2026-10-15 10 -> 15)
 CAUTION_PCT = 110       # 화물이 적정 적재중량의 이 % 를 넘으면 주의
 WARNING_PCT = 125       # 이 % 를 넘으면 경고
 DANGER_PCT = 140        # 이 % 를 넘으면 위험
