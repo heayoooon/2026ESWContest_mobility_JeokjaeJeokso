@@ -65,8 +65,8 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 | 판정 | 파일 | 주의 | 경고 | 위험 |
 |---|---|---|---|---|
 | 적재 | `total.py` | 적정 `RATED_KG`(15kg) 의 110% 넘음 | 125% 넘음 | 140% 넘음 |
-| 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_CAUTION`(25%) 안 | `COG_WARNING`(15%) 안 | `COG_DANGER`(7%) 안 |
-| 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 허용(셀 간격 `COG_RESID`(10%) + `COG_RESID_A`(20%/G) x \|a\|) 넘음, 최근 `MOVE_WIN_S`(1초)의 `MOVE_ALPHA`(60%) 이상 | 1.4배 넘음 (`MOVE_CONFIRM_S`(1.5초) 이어져도 경고) | 1.8배 넘음 (`MOVE_DANGER_S`(3초) 이어져도 위험) |
+| 무게중심 | `cog.py` `zone()` | 가장자리에서 셀 간격 `COG_CAUTION`(15%) 안 | `COG_WARNING`(8%) 안 | `COG_DANGER`(3%) 안 |
+| 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 허용(셀 간격 `COG_RESID`(7%) + `COG_RESID_A`(20%/G) x \|a\|) 넘음, 최근 `MOVE_WIN_S`(1초)의 `MOVE_ALPHA`(60%) 이상 | 1.4배 넘음 (`MOVE_CONFIRM_S`(1.5초) 이어져도 경고) | 1.8배 넘음 (`MOVE_DANGER_S`(3초) 이어져도 위험) |
 | 장력 N / S | `tension.py` | 하한의 100% 밑 / `TENSION_MAX`(80N) 의 50% 넘음 | 75% 밑 / 75% 넘음 | 50% 밑 / 100% 넘음 |
 
 - **적재**: 셀 합에서 벨트가 화물을 누른 몫(장력 × 2 sin`TENSION_ANGLE`)을 빼고 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다.
@@ -77,7 +77,7 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
   가감속이 0.08G 넘는 프레임마다 원점을 지나는 직선을 맞춰 k(=h)를 고쳐 나가고(2026-10-03 급출발에서 k 를 맞춘 방법),
   시작값은 `COG_H`(190mm)이고, 화물 이동이 위험으로 확정되거나 화물을 내리면(무게중심이 2초 넘게 없음) 학습한 h 를 버리고 시작값으로 돌아간다.
   예측과 실측의 차가 크면 가감속으로 설명이 안 되는 변화 = 화물이 미끄러지거나 떨어진 것이다.
-  화물이 새 자리에서 3초 조용히 있으면 그 자리를 새 기준으로 받아들인다.
+  화물이 새 자리에서 4초 조용히 있으면 그 자리를 새 기준으로 받아들이고, 화물 이동 알림은 풀린 뒤에도 8초 유지한다.
 - **장력**: `HX_TENSION` 순서대로 첫 번째 = N(앞)쪽 벨트, 두 번째 = S(뒤)쪽 벨트.
   벨트마다 따로 판정해서 화면에는 `장력 N(c1)`, `장력 S(c2)` 로 뜬다.
   하한 = 맡은 무게 × g(`TENSION_A` − `TENSION_MU`) fs / (2 `TENSION_MU` sin`TENSION_ANGLE`) (EN 12195-1 식 10,

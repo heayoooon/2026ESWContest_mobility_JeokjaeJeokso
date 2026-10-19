@@ -86,8 +86,8 @@ HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/l
 | `HX_TENSION` | `T1,T2` | 벨트 장력(인장형) 채널 라벨. 나머지는 바닥 하중 채널 |
 | `COG_CORNERS` | `FL,FR,RL,RR` | 무게중심용 바닥 셀. 앞왼,앞오,뒤왼,뒤오 순서 |
 | `BED_L` / `BED_W` | 없음 | 앞왼-앞오 / 앞왼-뒤왼 셀 간격(mm). 없으면 무게중심을 % 로 |
-| `COG_CAUTION` / `COG_WARNING` / `COG_DANGER` | `25` / `15` / `7` | 무게중심이 판 가장자리에서 셀 간격의 이 % 안이면 주의 / 경고 / 위험 |
-| `COG_RESID` / `COG_RESID_A` | `10` / `20` | IMU 예측 무게중심과 실측의 차 허용(셀 간격 %) = `COG_RESID` + `COG_RESID_A` x \|a\|(G). 허용의 1 · 1.4 · 1.8배부터 주의 · 경고 · 위험 (화물 이동) |
+| `COG_CAUTION` / `COG_WARNING` / `COG_DANGER` | `15` / `8` / `3` | 무게중심이 판 가장자리에서 셀 간격의 이 % 안이면 주의 / 경고 / 위험 |
+| `COG_RESID` / `COG_RESID_A` | `7` / `20` | IMU 예측 무게중심과 실측의 차 허용(셀 간격 %) = `COG_RESID` + `COG_RESID_A` x \|a\|(G). 허용의 1 · 1.4 · 1.8배부터 주의 · 경고 · 위험 (화물 이동) |
 | `MOVE_WIN_S` / `MOVE_ALPHA` | `1.0` / `0.6` | 화물 이동을 볼 최근 구간(초)과, 그 구간에서 그 단계여야 하는 비율 |
 | `MOVE_CONFIRM_S` / `MOVE_DANGER_S` | `1.5` / `3.0` | 이동이 이만큼(초) 이어지면 최소 경고 / 잔차가 위험 수준일 때 위험 |
 | `COG_LAG` | `0.2` | 로드셀이 IMU 보다 늦는 시간(초) |

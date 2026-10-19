@@ -31,7 +31,7 @@ from analysis.transfer import Transfer, TransferCheck
 
 # 판정별 (on_s, hold_s): 이만큼 이어져야 알리고, 풀린 뒤에도 이만큼 알림을 유지한다
 #   화물 이동은 transfer.py 가 최근 구간 비율로 이미 단발성 값을 걸러서 on_s 를 0 으로 둔다
-HOLD = {"load": (2.0, 2.0), "cog": (0.3, 1.0), "move": (0.0, 5.0)}
+HOLD = {"load": (2.0, 2.0), "cog": (0.3, 1.0), "move": (0.0, 8.0)}
 HOLD_TENSION = (0.5, 2.0)
 
 

@@ -39,12 +39,16 @@ HX711
   적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
   장력 단계 기준(하한 · 상한의 몇 %, 안전계수 fs)도 analysis/tension.py 맨 위 상수다
   종합 위험도는 적재 · 무게중심 · 장력 단계를 합친 것이다 (analysis/overall.py, 화물 이동은 안 넣는다)
-  COG_CAUTION  무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
-  COG_WARNING  같은 방식으로 경고                                기본 15
-  COG_DANGER   같은 방식으로 위험                                기본 7
-               (기본값이면 가운데 50% = 정상, 그 바깥 10% = 주의, 8% = 경고, 가장자리 7% = 위험)
+  COG_CAUTION  무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 15
+  COG_WARNING  같은 방식으로 경고                                기본 8
+  COG_DANGER   같은 방식으로 위험                                기본 3
+               (기본값이면 가운데 70% = 정상, 그 바깥 7% = 주의, 5% = 경고, 가장자리 3% = 위험)
+               (처음엔 25 / 15 / 7 이었다. 대차 중앙에 못 옮기는 상자가 있어 화물이 앞쪽에 놓이는데,
+                2026-10-15 실측에서 정상 배치의 앞쪽 여유가 15~20% 라서 15 / 8 / 3 으로 낮췄다)
   COG_RESID    IMU 로 예측한 무게중심과 실측의 차 허용(셀 간격 %), 가속이 없을 때.
-               가감속으로 설명 안 되는 변화 = 화물 이동. 허용의 1 · 1.4 · 1.8배부터 주의 · 경고 · 위험  기본 10
+               가감속으로 설명 안 되는 변화 = 화물 이동. 허용의 1 · 1.4 · 1.8배부터 주의 · 경고 · 위험  기본 7
+               (처음엔 10 이었다. 2026-10-15 실측에서 10 · 8 은 작은 화물 이동(+27mm)을 놓치고 7 부터 주의로 잡힌다.
+                정상 시나리오 오경보는 10 · 8 · 7 · 6 모두 0, 값이 낮을수록 손으로 화물을 만지는 구간의 경보가 늘어난다)
   COG_RESID_A  가속 1G 당 늘어나는 허용(셀 간격 %). 허용 = COG_RESID + COG_RESID_A x |a|.
                보상을 해도 급가감속 중에는 h 오차가 가속에 비례해 남는다      기본 20
   MOVE_WIN_S   화물 이동을 볼 최근 구간(초)                       기본 1.0
@@ -163,10 +167,10 @@ class Config:
         self.imu_cal = _str("IMU_CAL", "")
 
         # --- 판정 · 위험도 -----------------------------------------------
-        self.cog_caution = _float("COG_CAUTION", 25)
-        self.cog_warning = _float("COG_WARNING", 15)
-        self.cog_danger = _float("COG_DANGER", 7)
-        self.cog_resid = _float("COG_RESID", 10)
+        self.cog_caution = _float("COG_CAUTION", 15)
+        self.cog_warning = _float("COG_WARNING", 8)
+        self.cog_danger = _float("COG_DANGER", 3)
+        self.cog_resid = _float("COG_RESID", 7)
         self.cog_resid_a = _float("COG_RESID_A", 20)
         self.move_win_s = _float("MOVE_WIN_S", 1.0)
         self.move_alpha = _float("MOVE_ALPHA", 0.6)
