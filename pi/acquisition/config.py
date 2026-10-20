@@ -56,12 +56,12 @@ HX711
   MOVE_CONFIRM_S  이동이 이만큼(초) 이어지면 최소 경고 (그 전은 의심)  기본 1.5
   MOVE_DANGER_S   이동이 이만큼(초) 이어지고 잔차가 위험 수준이면 위험  기본 3.0
   COG_LAG     로드셀이 IMU 보다 늦는 시간(초)                  기본 0.2
-  COG_H        무게중심 높이 h 의 시작값(mm). 주행 중 가감속 데이터로 고쳐 나간다.
-               BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 190
-               (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm).
-               화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 이 값으로 돌아간다
-  COG_H_LEARN  1 이면 위처럼 주행 중 가감속 데이터로 h 를 고쳐 나가고, 0 이면 학습을 끄고 h 를 COG_H 로 고정한다.
-               0 이면 COG_H(0 초과) 와 BED_L/BED_W 가 있어야 한다                  기본 1
+  COG_H_LEARN  무게중심 높이 h 를 주행 중 가감속 데이터로 학습할지. 1 이면 학습, 0 이면 끄고 h 를 고정한다   기본 1
+               0 이면 BED_L/BED_W 가 있어야 한다 (h 의 단위가 mm 라서).
+               h 값 자체는 환경변수가 아니라 이 파일 위쪽(G 아래)의 상수다: 학습할 때 시작값 H_START_MM = 190,
+               학습을 끄면 고정값 H_FIXED_MM = 150. 화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 시작값으로 돌아간다
+               (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm. 시작값은 학습이 곧 끌어내려서 190 이든 150 이든 결과가 같다.
+                고정할 때는 190 이 10/15 우회전 급커브에서 오경보를 내고 150 은 0 이라서 150)
                (주행이 없는 시연에서는 학습이 손작업 잡음만 배운다. 2026-10-15 실측에서 h 가 190 -> 74~137 로 내려갔다)
   JUDGE_IMU   하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
@@ -108,6 +108,10 @@ import os
 import time
 
 G = 9.80665     # m/s^2
+
+# 무게중심 높이 h (mm). 환경변수로 받지 않는다 (COG_H_LEARN 으로 학습 여부만 고른다)
+H_START_MM = 190        # 학습할 때 시작값. 학습이 곧 실제 값으로 고쳐 나가서 190 이든 150 이든 결과가 같다
+H_FIXED_MM = 150        # 학습을 끄면 쓰는 고정값. 10/15 실측에서 190 은 우회전 급커브에서 오경보를 내고 150 은 0
 
 def _str(name, default):
     v = os.environ.get(name)
@@ -180,8 +184,8 @@ class Config:
         self.move_confirm_s = _float("MOVE_CONFIRM_S", 1.5)
         self.move_danger_s = _float("MOVE_DANGER_S", 3.0)
         self.cog_lag = _float("COG_LAG", 0.2)
-        self.cog_h = _float("COG_H", 190) or None
         self.cog_h_learn = _int("COG_H_LEARN", 1)
+        self.cog_h = H_START_MM if self.cog_h_learn else H_FIXED_MM     # 학습하면 시작값, 끄면 고정값
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
         self.tension_mu = _float("TENSION_MU", 0.5)
@@ -261,12 +265,10 @@ class Config:
         if not 0 < self.move_confirm_s < self.move_danger_s:
             raise SystemExit("0 < MOVE_CONFIRM_S < MOVE_DANGER_S (초): %g, %g"
                              % (self.move_confirm_s, self.move_danger_s))
-        if self.cog_h is not None and self.cog_h < 0:
-            raise SystemExit("COG_H 는 양수(mm). 0 이면 시작값 없이 데이터로만 추정")
         if self.cog_h_learn not in (0, 1):
             raise SystemExit("COG_H_LEARN 은 0(학습 끔, h 고정) 또는 1(학습): %d" % self.cog_h_learn)
-        if not self.cog_h_learn and (not self.cog_h or not self.bed_l):
-            raise SystemExit("COG_H_LEARN=0 이면 h 가 COG_H 로 고정이라 COG_H(mm, 0 초과) 와 BED_L/BED_W 가 필요하다")
+        if not self.cog_h_learn and not self.bed_l:
+            raise SystemExit("COG_H_LEARN=0 이면 h 를 %g mm 로 고정하는데, mm 단위라서 BED_L/BED_W 가 필요하다" % H_FIXED_MM)
         if self.judge_imu and self.judge_imu not in self.imu_labels:
             raise SystemExit("JUDGE_IMU=%s 가 IMU 라벨 %r 에 없다" % (self.judge_imu, self.imu_labels))
         if self.tension_mu <= 0 or self.tension_a < 0:
@@ -374,7 +376,7 @@ class Config:
                              transfer.E_WARNING, transfer.E_DANGER, self.move_win_s, 100 * self.move_alpha))
             lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h %s %s)" % (
                 self.move_confirm_s, self.move_danger_s, self.cog_lag, "시작" if self.cog_h_learn else "고정(학습 끔)",
-                "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
+                "%gmm" % self.cog_h if self.bed_l else "없음 -> 데이터로만"))
         sides = self.belt_sides()
         if sides:
             unit = "mm" if self.bed_w else "%"
