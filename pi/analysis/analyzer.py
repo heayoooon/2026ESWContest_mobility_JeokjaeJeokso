@@ -75,6 +75,16 @@ class Analyzer:
         self.holds = {k: Hold(*HOLD.get(k, HOLD_TENSION)) for k, _ in self.checks}
         self.last = {k: None for k, _ in self.checks}
         self.last_level = None                  # 지난 프레임 종합 위험도
+        self.rebase_n = 0                       # 기준 재설정을 받은 횟수
+
+    def rebase(self):
+        """기준 재설정: 지금 상태를 정상 기준으로 삼는다. 화물 이동 판정(기준 위치, 학습한 h, 붙잡고 있던 알림)만
+        지우고 직후 몇 초는 화물이 자리 잡을 때까지 판정을 보류한다 (transfer.py REBASE_MUTE_S).
+        과적 · 무게중심 쏠림 · 장력 풀림은 지금 상태를 그대로 보는 판정이라 건드리지 않는다. 재설정이 진짜 위험을 가려서는 안 된다."""
+        if self.transfer:
+            self.transfer.rebase()
+            self.holds["move"] = Hold(*HOLD.get("move", HOLD_TENSION))     # 붙잡고 있던 화물 이동 알림을 지운다
+        self.rebase_n += 1
 
     def __call__(self, frame):
         t = frame.t_s
