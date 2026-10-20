@@ -60,7 +60,10 @@ HX711
                BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 190
                (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm).
                화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 이 값으로 돌아간다
-  JUDGE_IMU    하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
+  COG_H_LEARN  1 이면 위처럼 주행 중 가감속 데이터로 h 를 고쳐 나가고, 0 이면 학습을 끄고 h 를 COG_H 로 고정한다.
+               0 이면 COG_H(0 초과) 와 BED_L/BED_W 가 있어야 한다                  기본 1
+               (주행이 없는 시연에서는 학습이 손작업 잡음만 배운다. 2026-10-15 실측에서 h 가 190 -> 74~137 로 내려갔다)
+  JUDGE_IMU   하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
   TENSION_MU   화물-바닥 마찰계수                                기본 0.5
   TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
@@ -178,6 +181,7 @@ class Config:
         self.move_danger_s = _float("MOVE_DANGER_S", 3.0)
         self.cog_lag = _float("COG_LAG", 0.2)
         self.cog_h = _float("COG_H", 190) or None
+        self.cog_h_learn = _int("COG_H_LEARN", 1)
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
         self.tension_mu = _float("TENSION_MU", 0.5)
@@ -259,6 +263,10 @@ class Config:
                              % (self.move_confirm_s, self.move_danger_s))
         if self.cog_h is not None and self.cog_h < 0:
             raise SystemExit("COG_H 는 양수(mm). 0 이면 시작값 없이 데이터로만 추정")
+        if self.cog_h_learn not in (0, 1):
+            raise SystemExit("COG_H_LEARN 은 0(학습 끔, h 고정) 또는 1(학습): %d" % self.cog_h_learn)
+        if not self.cog_h_learn and (not self.cog_h or not self.bed_l):
+            raise SystemExit("COG_H_LEARN=0 이면 h 가 COG_H 로 고정이라 COG_H(mm, 0 초과) 와 BED_L/BED_W 가 필요하다")
         if self.judge_imu and self.judge_imu not in self.imu_labels:
             raise SystemExit("JUDGE_IMU=%s 가 IMU 라벨 %r 에 없다" % (self.judge_imu, self.imu_labels))
         if self.tension_mu <= 0 or self.tension_a < 0:
@@ -364,8 +372,8 @@ class Config:
                          "최근 %gs 의 %g%% 이상일 때" % (
                              self.judge_imu or "없음", self.cog_resid, self.cog_resid_a, transfer.E_CAUTION,
                              transfer.E_WARNING, transfer.E_DANGER, self.move_win_s, 100 * self.move_alpha))
-            lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h 시작 %s)" % (
-                self.move_confirm_s, self.move_danger_s, self.cog_lag,
+            lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h %s %s)" % (
+                self.move_confirm_s, self.move_danger_s, self.cog_lag, "시작" if self.cog_h_learn else "고정(학습 끔)",
                 "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
         sides = self.belt_sides()
         if sides:

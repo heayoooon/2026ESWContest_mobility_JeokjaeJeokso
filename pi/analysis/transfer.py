@@ -10,6 +10,7 @@ h 추정: 가감속이 A_FIT 이상인 프레임마다 (a - a0, 무게중심 - X
 최소제곱으로 낸다 (2026-10-03 급출발 기록에서 k 를 맞춘 방법과 같다). 오래된 점은 FORGET 로 잊고,
 COG_H 시작값은 PRIOR_W 만큼의 점으로 친다. 잔차가 경고 수준(E_WARNING 배) 이상인 점(화물 이동)은 맞춤에 안 쓴다.
 기울기 부호도 데이터로 정해지므로 IMU 가 반대로 달려 있어도 맞춰진다.
+COG_H_LEARN=0 이면 이 학습을 끄고 h 를 COG_H 로 고정한다 (주행이 없는 시연용).
 화물이 달라졌다고 볼 때는 학습한 h 를 버리고 COG_H 로 돌아간다: 화물 이동이 위험으로 확정된 순간, 그리고 화물을
 내려서 무게중심이 RESET_S 초 넘게 안 나올 때. 위험이 뜨기 직전 프레임들이 맞춤에 섞여 h 가 튀어 있어도(2026-10-04
 화물추락: 220 -> 337mm) 운전자가 멈추고 다시 묶은 뒤까지 이어지지 않는다.
@@ -111,6 +112,7 @@ class TransferCheck:
         self.lag = cfg.cog_lag
         self.x = _Axis(span_x, k0, cfg.cog_resid, cfg.cog_resid_a)
         self.y = _Axis(span_y, k0, cfg.cog_resid, cfg.cog_resid_a)
+        self.learn = bool(cfg.cog_h_learn)      # False 면 h 를 학습하지 않고 COG_H 로 고정한다
         self.win_s = cfg.move_win_s             # 최근 구간 길이(초)
         self.alpha = cfg.move_alpha             # 구간 안에서 이 비율 이상이어야 그 단계
         self.confirm_s = cfg.move_confirm_s     # T_slip 이 이만큼이면 최소 경고
@@ -157,8 +159,8 @@ class TransferCheck:
         thr_x, thr_y = X.thr_at(a_mag), Y.thr_at(a_mag)
         e = max(abs(rx) / thr_x, abs(ry) / thr_y)       # 가속을 반영한 허용의 몇 배인가
 
-        # h 맞춤: 가감속이 충분하고 화물 이동으로 안 보일 때만
-        if e < E_WARNING:
+        # h 맞춤: 가감속이 충분하고 화물 이동으로 안 보일 때만 (COG_H_LEARN=0 이면 안 한다 -> h 는 COG_H 그대로)
+        if self.learn and e < E_WARNING:
             if abs(day) >= A_FIT:
                 X.fit(day, c.x - X.c0)
             if abs(dax) >= A_FIT:
