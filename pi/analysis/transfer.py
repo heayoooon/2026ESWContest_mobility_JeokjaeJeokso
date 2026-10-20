@@ -47,6 +47,8 @@ PRIOR_W = 0.05      # G^2. 시작값(H_START_MM)을 이만큼의 점으로 친�
 REF_TAU = 2.0       # 초. 조용할 때 기준 무게중심 · 기준 IMU 값이 따라가는 시정수
 SETTLE_S = 4.0      # 초. 이동한 화물이 새 자리에서 이만큼 조용히 있으면 새 기준으로
 RESET_S = 2.0       # 초. 무게중심이 이만큼 안 나오면(화물 내림) 기준을 버리고 다음 화물에서 새로 잡는다
+REBASE_MUTE_S = 3.0 # 초. 기준 재설정(rebase) 직후 이만큼은 화물 이동을 판정하지 않는다. 막 놓은 화물이 자리 잡는 시간.
+                    # 이 동안 화물이 쓰러져도 못 잡으니, 재설정은 화물이 가만히 있을 때 누른다
 K_MAX = 1.0         # |k| 상한 = 셀 간격 x K_MAX (/G). 이상한 점 몇 개에 h 가 튀지 않게
                     # (2026-10-04 화물추락: 추락 뒤 이동량이 맞춤에 섞여 h_y 가 556mm 까지 튀었다. 정상은 132~220mm)
 
@@ -120,7 +122,23 @@ class TransferCheck:
         self.hist = collections.deque()         # 최근 COG_LAG 초 IMU (t, ax, ay, |gz|)
         self.prev_t = None                      # 마지막으로 무게중심을 본 시각
         self.settle = []                        # 이동한 화물의 새 자리 후보 [(t, X0, Y0)]
+        self.mute_pending = False               # rebase() 직후: 다음에 본 프레임부터 REBASE_MUTE_S 초 판정 보류
+        self.mute_until = None                  # 이 시각까지 판정 보류
         self._reset_judge()
+
+    def rebase(self):
+        """기준 재설정: 지금 무게중심 · 가속도를 정상 기준으로 다시 잡는다 (예: 화물을 올려 놓은 뒤, 시연 직전).
+        화물 이동 판정만 지운다. 기준 무게중심 · 가속도, 최근 구간, 이동 지속시간, 새 기준 후보, 위험 표시를 비우고
+        학습한 h 도 시작값으로 되돌린다 (학습을 껐으면 영향 없음). 직후 REBASE_MUTE_S 초는 판정을 보류하며
+        그동안 화물이 자리 잡는 대로 기준을 따라간다."""
+        X, Y = self.x, self.y
+        X.c0 = Y.c0 = X.a0 = Y.a0 = None
+        X.forget_fit()
+        Y.forget_fit()
+        self.settle = []
+        self.prev_t = None
+        self._reset_judge()
+        self.mute_pending, self.mute_until = True, None
 
     def _reset_judge(self):
         self.a_hist = collections.deque(maxlen=A_WIN)   # 최근 |a| (기준 IMU 값을 뺀 크기)
@@ -145,6 +163,17 @@ class TransferCheck:
             return None, Check("move", "화물 이동", None, "무게중심 값 없음")
 
         _, ax, ay, _ = self.hist[0]             # COG_LAG 초 전 IMU (로드셀이 그만큼 늦다)
+        if self.mute_pending:                   # 기준 재설정 직후: 무게중심을 처음 본 프레임부터 센다
+            self.mute_pending = False
+            self.mute_until = t + REBASE_MUTE_S
+        if self.mute_until is not None:
+            if t < self.mute_until:             # 보류 중: 화물이 자리 잡는 대로 지금 값을 기준으로 둔다
+                X.a0, Y.a0 = ay, ax
+                X.c0, Y.c0 = c.x, c.y
+                self.prev_t = t
+                out = Transfer(c.x, c.y, X.k(), Y.k(), static_x=c.x, static_y=c.y, e=0.0)
+                return out, Check("move", "화물 이동", OK, "기준 재설정 중 (%.1f초 남음)" % (self.mute_until - t))
+            self.mute_until = None
         if X.a0 is None:
             X.a0, Y.a0 = ay, ax
         day, dax = ay - X.a0, ax - Y.a0
