@@ -39,12 +39,16 @@ HX711
   적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
   장력 단계 기준(하한 · 상한의 몇 %, 안전계수 fs)도 analysis/tension.py 맨 위 상수다
   종합 위험도는 적재 · 무게중심 · 장력 단계를 합친 것이다 (analysis/overall.py, 화물 이동은 안 넣는다)
-  COG_CAUTION  무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 25
-  COG_WARNING  같은 방식으로 경고                                기본 15
-  COG_DANGER   같은 방식으로 위험                                기본 7
-               (기본값이면 가운데 50% = 정상, 그 바깥 10% = 주의, 8% = 경고, 가장자리 7% = 위험)
+  COG_CAUTION  무게중심이 판 가장자리에서 셀 간격의 이 % 안으로 들어오면 주의  기본 15
+  COG_WARNING  같은 방식으로 경고                                기본 8
+  COG_DANGER   같은 방식으로 위험                                기본 3
+               (기본값이면 가운데 70% = 정상, 그 바깥 7% = 주의, 5% = 경고, 가장자리 3% = 위험)
+               (처음엔 25 / 15 / 7 이었다. 대차 중앙에 못 옮기는 상자가 있어 화물이 앞쪽에 놓이는데,
+                2026-10-15 실측에서 정상 배치의 앞쪽 여유가 15~20% 라서 15 / 8 / 3 으로 낮췄다)
   COG_RESID    IMU 로 예측한 무게중심과 실측의 차 허용(셀 간격 %), 가속이 없을 때.
-               가감속으로 설명 안 되는 변화 = 화물 이동. 허용의 1 · 1.4 · 1.8배부터 주의 · 경고 · 위험  기본 10
+               가감속으로 설명 안 되는 변화 = 화물 이동. 허용의 1 · 1.4 · 1.8배부터 주의 · 경고 · 위험  기본 7
+               (처음엔 10 이었다. 2026-10-15 실측에서 10 · 8 은 작은 화물 이동(+27mm)을 놓치고 7 부터 주의로 잡힌다.
+                정상 시나리오 오경보는 10 · 8 · 7 · 6 모두 0, 값이 낮을수록 손으로 화물을 만지는 구간의 경보가 늘어난다)
   COG_RESID_A  가속 1G 당 늘어나는 허용(셀 간격 %). 허용 = COG_RESID + COG_RESID_A x |a|.
                보상을 해도 급가감속 중에는 h 오차가 가속에 비례해 남는다      기본 20
   MOVE_WIN_S   화물 이동을 볼 최근 구간(초)                       기본 1.0
@@ -52,11 +56,14 @@ HX711
   MOVE_CONFIRM_S  이동이 이만큼(초) 이어지면 최소 경고 (그 전은 의심)  기본 1.5
   MOVE_DANGER_S   이동이 이만큼(초) 이어지고 잔차가 위험 수준이면 위험  기본 3.0
   COG_LAG     로드셀이 IMU 보다 늦는 시간(초)                  기본 0.2
-  COG_H        무게중심 높이 h 의 시작값(mm). 주행 중 가감속 데이터로 고쳐 나간다.
-               BED_L/BED_W 가 없으면(% 단위) 안 쓰고 데이터로만 추정  기본 190
-               (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm).
-               화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 이 값으로 돌아간다
-  JUDGE_IMU    하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
+  COG_H_LEARN  무게중심 높이 h 를 주행 중 가감속 데이터로 학습할지. 1 이면 학습, 0 이면 끄고 h 를 고정한다   기본 1
+               0 이면 BED_L/BED_W 가 있어야 한다 (h 의 단위가 mm 라서).
+               h 값 자체는 환경변수가 아니라 이 파일 위쪽(G 아래)의 상수다: 학습할 때 시작값 H_START_MM = 190,
+               학습을 끄면 고정값 H_FIXED_MM = 150. 화물 이동이 위험으로 확정되거나 화물을 내리면 학습한 h 를 버리고 시작값으로 돌아간다
+               (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm. 시작값은 학습이 곧 끌어내려서 190 이든 150 이든 결과가 같다.
+                고정할 때는 190 이 10/15 우회전 급커브에서 오경보를 내고 150 은 0 이라서 150)
+               (주행이 없는 시연에서는 학습이 손작업 잡음만 배운다. 2026-10-15 실측에서 h 가 190 -> 74~137 로 내려갔다)
+  JUDGE_IMU   하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
   TENSION_MU   화물-바닥 마찰계수                                기본 0.5
   TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
@@ -101,6 +108,10 @@ import os
 import time
 
 G = 9.80665     # m/s^2
+
+# 무게중심 높이 h (mm). 환경변수로 받지 않는다 (COG_H_LEARN 으로 학습 여부만 고른다)
+H_START_MM = 190        # 학습할 때 시작값. 학습이 곧 실제 값으로 고쳐 나가서 190 이든 150 이든 결과가 같다
+H_FIXED_MM = 150        # 학습을 끄면 쓰는 고정값. 10/15 실측에서 190 은 우회전 급커브에서 오경보를 내고 150 은 0
 
 def _str(name, default):
     v = os.environ.get(name)
@@ -163,17 +174,18 @@ class Config:
         self.imu_cal = _str("IMU_CAL", "")
 
         # --- 판정 · 위험도 -----------------------------------------------
-        self.cog_caution = _float("COG_CAUTION", 25)
-        self.cog_warning = _float("COG_WARNING", 15)
-        self.cog_danger = _float("COG_DANGER", 7)
-        self.cog_resid = _float("COG_RESID", 10)
+        self.cog_caution = _float("COG_CAUTION", 15)
+        self.cog_warning = _float("COG_WARNING", 8)
+        self.cog_danger = _float("COG_DANGER", 3)
+        self.cog_resid = _float("COG_RESID", 7)
         self.cog_resid_a = _float("COG_RESID_A", 20)
         self.move_win_s = _float("MOVE_WIN_S", 1.0)
         self.move_alpha = _float("MOVE_ALPHA", 0.6)
         self.move_confirm_s = _float("MOVE_CONFIRM_S", 1.5)
         self.move_danger_s = _float("MOVE_DANGER_S", 3.0)
         self.cog_lag = _float("COG_LAG", 0.2)
-        self.cog_h = _float("COG_H", 190) or None
+        self.cog_h_learn = _int("COG_H_LEARN", 1)
+        self.cog_h = H_START_MM if self.cog_h_learn else H_FIXED_MM     # 학습하면 시작값, 끄면 고정값
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
         self.tension_mu = _float("TENSION_MU", 0.5)
@@ -253,8 +265,10 @@ class Config:
         if not 0 < self.move_confirm_s < self.move_danger_s:
             raise SystemExit("0 < MOVE_CONFIRM_S < MOVE_DANGER_S (초): %g, %g"
                              % (self.move_confirm_s, self.move_danger_s))
-        if self.cog_h is not None and self.cog_h < 0:
-            raise SystemExit("COG_H 는 양수(mm). 0 이면 시작값 없이 데이터로만 추정")
+        if self.cog_h_learn not in (0, 1):
+            raise SystemExit("COG_H_LEARN 은 0(학습 끔, h 고정) 또는 1(학습): %d" % self.cog_h_learn)
+        if not self.cog_h_learn and not self.bed_l:
+            raise SystemExit("COG_H_LEARN=0 이면 h 를 %g mm 로 고정하는데, mm 단위라서 BED_L/BED_W 가 필요하다" % H_FIXED_MM)
         if self.judge_imu and self.judge_imu not in self.imu_labels:
             raise SystemExit("JUDGE_IMU=%s 가 IMU 라벨 %r 에 없다" % (self.judge_imu, self.imu_labels))
         if self.tension_mu <= 0 or self.tension_a < 0:
@@ -360,9 +374,9 @@ class Config:
                          "최근 %gs 의 %g%% 이상일 때" % (
                              self.judge_imu or "없음", self.cog_resid, self.cog_resid_a, transfer.E_CAUTION,
                              transfer.E_WARNING, transfer.E_DANGER, self.move_win_s, 100 * self.move_alpha))
-            lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h 시작 %s)" % (
-                self.move_confirm_s, self.move_danger_s, self.cog_lag,
-                "%gmm" % self.cog_h if self.cog_h and self.bed_l else "없음 -> 데이터로만"))
+            lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h %s %s)" % (
+                self.move_confirm_s, self.move_danger_s, self.cog_lag, "시작" if self.cog_h_learn else "고정(학습 끔)",
+                "%gmm" % self.cog_h if self.bed_l else "없음 -> 데이터로만"))
         sides = self.belt_sides()
         if sides:
             unit = "mm" if self.bed_w else "%"
