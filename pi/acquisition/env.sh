@@ -11,7 +11,7 @@ export COG_CORNERS=NW,NE,SW,SE
 export BED_L=250
 export BED_W=392
 # 벨트가 화물을 넘어가는 남북 위치(mm). 앞쪽 셀 줄(NW-NE 볼트 구멍 선)에서 뒤쪽으로 잰 거리.
-# TODO 실측값으로 바꿀 것. 지금은 셀 줄 위(0, 392) = 예전 계산(NW+NE / SW+SE)과 같다
-export BELT_N_Y=0
-export BELT_S_Y=392
+# 앞벨트 = 앞쪽 셀 줄에서 3cm, 뒤벨트 = 앞쪽 셀 줄에서 28cm
+export BELT_N_Y=30
+export BELT_S_Y=280
 export HX_INVERT=SW

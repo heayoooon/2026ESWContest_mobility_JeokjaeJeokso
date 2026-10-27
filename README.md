@@ -17,7 +17,7 @@
   센서 (pi / display 노드)                엣지                      서버 / 시각화
   ─────────────────────────              ───────────               ───────────────
   하중  로드셀 + HX711  ──┐
-  자세  MPU-6050 x2 (I2C) ─┼──▶  센서 퓨전 / 모션 보상  ──▶  FastAPI + WebSocket
+  자세  MPU-6050 x2 (I2C) ─┼──▶  센서 퓨전 / 모션 보상  ──▶  수신 서버 (HTTP · SSE)
   형상  RealSense D435i ──┘        무게중심 · 위험도 판정        2.5D 렌더링 · 디지털 트윈
 ```
 
@@ -25,9 +25,9 @@
 
 | 파트 | 하는 일 | 폴더 |
 |---|---|---|
-| hardware | 센서 · 배선 · 펌웨어 | `pi/`, `display/`, `hardware/` |
-| edge-computing | 센서 퓨전 · 모션 보상 · 위험도 판정 | `edge/` |
-| server-visualization | FastAPI · WebSocket · 2.5D 렌더링 | `server/`, `viz/` |
+| hardware | 센서 · 배선 · 보정 · 화면 · 스피커 | `pi/sensors/`, `pi/calibration/`, `pi/tools/`, `display/avtest/`, `display/cameratest/` |
+| edge-computing | 센서 퓨전 · 모션 보상 · 위험도 판정 | `pi/analysis/`, `pi/acquisition/`, `pi/pipeline.py` |
+| server-visualization | 수신 서버 · 2.5D 렌더링 · 디지털 트윈 | `display/twin/`, `viz/` |
 
 ---
 
@@ -35,16 +35,18 @@
 
 | 경로 | 내용 |
 |---|---|
-| `pi/sensors/` | 센서 드라이버: HX711 다채널(하중 · 장력), MPU-6050(I2C 직결 · ESP32 UDP), PC용 가짜 센서 |
+| `pi/sensors/` | 센서 드라이버: HX711 다채널(하중 · 장력), MPU-6050 |
 | `pi/pipeline.py` | 센서 실행 파일: 수집 → 판정 → 기록. 단계 사이는 `Frame`(센서값) · `Result`(판정 결과)로 주고받는다. 판정은 pi 에서 한다 |
 | `pi/acquisition/` | 공통 시계(`CLOCK_MONOTONIC`) 기반 수집 · 정렬 · 기록 (`source.py` → `Frame`, `log_xlsx.py` 엑셀, `log_camera.py` 카메라 엑셀, `log_sync.py` raw CSV) |
-| `pi/analysis/` | 판정: `analyzer.py`(`Frame` → `Result`), 총하중 · 무게중심 (`cog.py`) |
+| `pi/analysis/` | 판정 4개, 각각 정상 · 주의 · 경고 · 위험: 적재(`total.py`), 무게중심(`cog.py`), 화물 이동(`transfer.py`), 장력(`tension.py`). 종합 위험도(`overall.py`), 진입점 `analyzer.py`(`Frame` → `Result`) |
+| `pi/twin/` | D435i 깊이 프레임을 2.5D 높이맵으로 만들어 UDP 로 송신 (`pi_twin_node.py`), 수신 · 재생 도구 |
+| `pi/live/` | 센서 파이 실시간 송신: 센서 · 판정(`sensor_feed.py`) + 카메라(`live_twin.py`)를 디스플레이로 보낸다 (`run_live.sh`), 구간 녹화(`rec.sh`) |
 | `pi/calibration/` | 로드셀 영점 · 배율(`calib.json`), IMU 바이어스 · 장착 방향(`imu_cal.json`) |
 | `pi/tools/` | HX711 배선 점검, IMU 스캔 · 실시간 각도, I2C 진단 |
 | `display/avtest/` | 7인치 DSI 화면 · USB 스피커 동작 확인 |
 | `display/cameratest/` | RealSense D435i 진단 (`test_d435i.py`, `ir_probe.py`) + Pi 5용 librealsense 소스 빌드 절차 |
+| `display/twin/` | 디지털 트윈 키오스크: 센서 파이가 보내는 프레임을 받아 7인치 터치 화면에 2.5D 로 그린다 (`server/` 수신 서버, `web/` 화면 소스, `www/` 빌드) |
 | `viz/digital-twin/` | 영상 → 포토그래메트리 → Blender 정리 → Unity 씬 생성 파이프라인 |
-| `hardware/` `edge/` `server/` | 아직 비어 있음 (`.gitkeep`) |
 
 ---
 
@@ -58,25 +60,9 @@
 - **로드셀**: 4개를 HX711 1개에 합친 플랫폼 구성으로 보정을 끝냈고(offset 130740, 6.713 counts/g,
   162 g 기준, 분해능 약 ±6 g), 이후 **SparkFun SEN-21669 인장형(10 kg bar + hook) 2개 + HX711 2개**
   구성으로 재배선 중이다. 셀 선색은 빨강 E+, 검정 E-, 초록 A+, 흰색 A-.
-- **IMU**: MPU-6050 2개를 하드웨어 I2C(bus 1, GPIO2/3)에 물린다. `AD0 → 3.3V` 쪽이 `0x69`, 비운 쪽이 `0x68`.
+- **IMU**: MPU-6050를 하드웨어 I2C(bus 1, GPIO2/3)에 물린다. `AD0 → 3.3V` 쪽이 `0x69`, 비운 쪽이 `0x68`.
 - **뎁스카메라**: D435I, 시리얼 261822073176, 펌웨어 5.15.1.55, librealsense v2.58.4를 **RSUSB 백엔드로
   소스 빌드**해서 쓴다 (Debian 13 apt에 패키지 없음, aarch64 pip 휠 없음).
-
----
-
-## 진행 상황
-
-| 항목 | 상태 |
-|---|---|
-| HX711 4셀 플랫폼 보정 | ✅ 완료 · 162 g 실측 152~162 g |
-| HX711 인장형 2셀 재배선 | ⚠️ 헤더 스캔에서 2개만 응답(GPIO5/6, GPIO26/21). 모듈마다 새 영점 + 162 g 보정 필요 |
-| MPU-6050 2개 각도 보정 | ✅ 완료 · 장착 방향(up 축) 인식까지, `test_remap.py` 6방향 전부 통과 |
-| D435i depth | ✅ 완료 · 유효 depth 73.6 %, 0.18~4.69 m, 24.9 fps |
-| 7" DSI 화면 | ❌ 패널이 안 켜짐 (백라이트 0x45 · 터치 0x38 무응답 → 디스플레이 보드 전원/리본 의심). 렌더링 · 스크린샷은 됨 |
-| USB 스피커 | ✅ 완료 |
-| 디지털 트윈 스캔 | ⚠️ 카트 + 화물 텍스처 메시 1차 완료(79장 중 46장 정합, 재투영 오차 0.82 px). **스케일 · 질량 미보정** |
-| 센서 퓨전 / 위험도 판정 (`edge/`) | ⬜ 미착수 |
-| FastAPI · WebSocket · 2.5D (`server/`) | ⬜ 미착수 |
 
 ---
 
