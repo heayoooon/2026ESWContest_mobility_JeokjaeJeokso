@@ -177,10 +177,6 @@ python3 calibration/imu_calibrate.py --only bus1:0x68    # 한 센서만
 - 중력이 실린 축(up)을 자동 감지한다. 모듈이 세워져 있어도(+x) 누워 있어도(+z) 된다.
 - `calibration/imu_cal.json` 에 바이어스(ax..gz)와 up 축이 저장되고, 읽을 때 축을 돌려 rest pose 기준 roll/pitch 를 낸다.
 - 진짜 수평계처럼 쓰려면 정말 수평인 면에서 보정한다. 브레드보드 위에서 보정하면 그 자세가 0도.
-- ESP32 센서는 자동 보정이 안 된다. `imu_cal.json` 에 `"esp32:0x68"` 키로 직접 넣는다.
-- `pipeline.py` 는 파이 I2C 센서(`IMU_ADDRS`, 기본 `0x68` = imu1)와 ESP32 무선 센서(`IMU_UDP_PORT`, 기본 UDP 5005 = imu2)를
-  함께 읽는다. ESP32 펌웨어의 `PI_PORT` 를 이 포트에 맞추고, 카메라(`CAM_PORT` 5006)와 겹치지 않게 한다.
-  패킷이 안 오면 imu2 열은 빈칸이고 행마다 `imu_miss:imu2` 가 flags 에 남는다.
 - 두 칩 구별: 자이로 바이어스 지문 (한쪽 gx ≈ -1430, 다른 쪽 ≈ -215).
 
 ### 확인 · 진단 (`tools/`)
