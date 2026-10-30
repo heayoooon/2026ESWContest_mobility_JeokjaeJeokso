@@ -33,11 +33,12 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 | `Result` 필드 | 내용 |
 |---|---|
 | `total_g` | 바닥 셀 합(g). 하나라도 값이 없으면 `None` |
-| `cog` | `CoG(x, y, unit)`. 화물 무게중심 = 벨트 누름을 벨트 위치(`BELT_N_Y`/`BELT_S_Y`)에서 뺀 값 (Y 만 바뀐다, `cog.py`). 앞왼 셀 원점, `unit` 은 `"mm"`(BED_L/BED_W 있을 때) 또는 `"%"`. 모서리 값이 없거나 화물이 100 g 미만이면 `None` |
+| `cog` | `CoG(x, y, unit)`. 화물 무게중심 = 벨트 누름을 벨트마다 추정한 누름 자리(x, y)에서 뺀 값 (`cog.py`, `belt_fit.py`). 앞왼 셀 원점, `unit` 은 `"mm"`(BED_L/BED_W 있을 때) 또는 `"%"`. 모서리 값이 없거나 화물이 100 g 미만이면 `None` |
 | `load_kg` | 적재 무게(kg). 셀 합에서 벨트 누름(장력 × 2 sinα)을 뺀 화물 무게. IMU `az` 로 나눠 위아래 출렁임을 빼고 평활 |
 | `measured_kg` | 측정 무게(kg). 셀 합 그대로(벨트 누름 포함), `az` 로 나누고 평활 |
 | `transfer` | `Transfer(pred_x, pred_y, kx, ky)` — IMU 로 예측한 무게중심과 추정한 하중 이동 계수. mm 단위면 `k` 가 곧 무게중심 높이 h(mm) |
 | `tension_min` | `{장력 라벨: N}` 그 벨트가 맡은 무게로 정한 장력 하한 |
+| `belts` | `{장력 라벨: Belt(k, x, y, steps)}` 벨트마다 추정한 누름 계수 k(장력 1N 이 누르는 힘 N)와 누름 자리. 시작값은 `BELT_K`, `BELT_N_Y`/`BELT_S_Y` (x 는 모름 = `None`), `steps` 는 추정에 쓴 조임 횟수 (`belt_fit.py`) |
 | `checks` | `[Check(key, name, level, text)]` 판정마다 하나. `level` 0 정상 · 1 주의 · 2 경고 · 3 위험 · `None` 판정 불가 |
 | `level` | 종합 위험도 = 적재 · 무게중심 · 장력 단계를 합친 것 ([아래](#종합-위험도-analysisoverallpy)). **화물 이동은 안 들어간다** (`checks` 의 `move` 로 따로 알린다) |
 | `changed` | `[(Check, 이전 레벨)]` 이번 프레임에 알림 레벨이 바뀐 판정 (화면 알림 · 엑셀 '판정' 시트). 종합이 바뀌면 key `risk` 인 `Check` 가 붙는다 |
@@ -51,7 +52,7 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 |---|---|---|
 | `sensors/` | ① 센서 값 받기 | 드라이버만. 값을 읽는 순간 `CLOCK_MONOTONIC` 으로 시각을 찍어 `(t_ns, 값)` 을 돌려준다 |
 | `acquisition/` | ② 수집 · 정렬 · 기록 | 설정(`config.py`, `env.sh`), 프레임(`frame.py`, `source.py`), 기록(`log_xlsx.py` 엑셀, `log_sync.py` raw CSV). 자세한 건 [acquisition/README.md](acquisition/README.md) |
-| `analysis/` | ③ 판정 | `analyzer.py` 입구(`Frame` → `Result`), `cog.py` 총하중 · 무게중심 · 구역, `total.py` 적재, `transfer.py` h 추정 · 화물 이동, `tension.py` 장력, `overall.py` 종합 위험도, `risk.py` 위험도 공통 ([아래](#판정--위험도-analysis)) |
+| `analysis/` | ③ 판정 | `analyzer.py` 입구(`Frame` → `Result`), `cog.py` 총하중 · 무게중심 · 구역, `total.py` 적재, `transfer.py` h 추정 · 화물 이동, `tension.py` 장력, `belt_fit.py` 벨트 누름 k · 자리 추정, `overall.py` 종합 위험도, `risk.py` 위험도 공통 ([아래](#판정--위험도-analysis)) |
 | `calibration/` | 보정 | 로드셀 `calibrate.py` → `calib.json`, IMU `imu_calibrate.py` → `imu_cal.json` |
 | `tools/` | 점검 · 진단 | 배선 확인, IMU 실시간 각도, I2C 진단. 평소엔 안 쓴다 |
 | `twin/` | 디지털트윈 (D435i) | 깊이 프레임 → 2.5D 높이맵 → UDP. `acquisition/` 과 **별도 프로세스** |
@@ -69,7 +70,7 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
 | 화물 이동 | `transfer.py` | IMU 예측과 실측 차가 허용(셀 간격 `COG_RESID`(7%) + `COG_RESID_A`(20%/G) x \|a\|) 넘음, 최근 `MOVE_WIN_S`(1초)의 `MOVE_ALPHA`(60%) 이상 | 1.4배 넘음 (`MOVE_CONFIRM_S`(1.5초) 이어져도 경고) | 1.8배 넘음 (`MOVE_DANGER_S`(3초) 이어져도 위험) |
 | 장력 N / S | `tension.py` | 하한의 100% 밑 / `TENSION_MAX`(80N) 의 50% 넘음 | 75% 밑 / 75% 넘음 | 50% 밑 / 100% 넘음 |
 
-- **적재**: 셀 합에서 벨트가 화물을 누른 몫(장력 × 2 sin`TENSION_ANGLE`)을 빼고 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다.
+- **적재**: 셀 합에서 벨트가 화물을 누른 몫(장력 × 벨트마다 추정한 k / g)을 빼고 차체 IMU `az` 로 나눠 위아래 출렁임을 뺀다.
   110% = 도로교통법 시행령 제22조 허용 한도, 140% = 도로법 중대 위반(40% 이상 초과). 화물이 넘어지며 벨트를 당길 때처럼 1~2초 튀는
   값에는 안 뜨게 2초 이어져야 알린다.
 - **화물 이동** (주행 중 h 추론 → IMU 로 무게중심 변화가 맞는지): 가속도 a(G)로 달리면 무게중심이 h × a 만큼 옮겨진다.
@@ -86,10 +87,16 @@ twin/pi_twin_node.py ──UDP──▶ acquisition/log_camera.py (별도 프로
   벨트마다 따로 판정해서 화면에는 `장력 N(c1)`, `장력 S(c2)` 로 뜬다.
   하한 = 맡은 무게 × g(`TENSION_A` − `TENSION_MU`) fs / (2 `TENSION_MU` sin`TENSION_ANGLE`) (EN 12195-1 식 10,
   안전계수 fs 1.1, 최소 1kg 당 1N · `TENSION_FLOOR`). 기본값(0.5G, μ 0.5, 90°)이면 미끄럼 항이 0 이라 최솟값 1 N/kg (μ 0.4 면 1.35 N/kg).
-  맡은 무게 = 화물 무게를 무게중심 위치에 따라 두 벨트(`BELT_N_Y`, `BELT_S_Y`)가 지렛대처럼 나눈 몫이다.
+  맡은 무게 = 화물 무게를 무게중심 위치에 따라 두 벨트(누름 y, 시작값 `BELT_N_Y`, `BELT_S_Y`)가 지렛대처럼 나눈 몫이다.
   벨트가 누른 힘은 그 벨트 위치에서 셀에 실리므로, 화물 무게와 무게중심을 낼 때 그 위치에서 뺀다
   (안 빼면 세게 조일수록 하한도 올라간다). 이 무게중심(`cog.py`)은 무게중심 · 화물 이동 판정과 화면에도 그대로 쓰여서,
   화물은 그대로인데 장력만 바꾸면 무게중심이 안 움직인다. 벨트 위치가 기본값(셀 줄 위)이면 앞쪽 두 셀 / 뒤쪽 두 셀 무게와 같다.
+  벨트 누름 계수 k 와 누름 자리 x, y 는 정차 중 벨트를 조일 때 자동으로 추정한다 (`belt_fit.py`, `BELT_FIT=1`).
+  장력 · 셀 합 · IMU 가 0.3초 넘게 안 움직이면 멈춘 구간으로 보고, 조이기 전 · 뒤 멈춘 구간의 차로 k = Δ셀 합 / ΔT,
+  x · y = Δ모멘트 / (k ΔT) 를 낸다 (두 벨트가 같이 바뀌면 최소제곱). 언제 다 조였는지 알려줄 필요 없이, 다음 벨트를 건드리면
+  그 전까지의 멈춘 구간으로 낸다. 주행 중 장력 흔들림, 장력이 준 변화(화물 밀림), 8N 보다 작은 변화, 손으로 화물을 누른 구간은 안 쓴다.
+  2026-10-25 장력꽉 기록: 고정값(k 1.9, y −20 / 280)이면 무게중심 오차 평균 6.3% · 최대 10.3%,
+  추정하면 1.3% · 2.4% (다른 회차에서 추정한 값을 넣은 교차검증).
   상한 `TENSION_MAX` 는 벨트 · 셀이 견디는 힘(EN 의 LC)이다. 조임 장력은 그 50% 까지라 넘으면 과조임 주의.
   하한의 100% · 50%, 상한의 50% · 100% 는 근거가 있는 값이고 75% 는 그 사이 가운데다
   (근거: [`analysis/tension_EN12195-1.md`](analysis/tension_EN12195-1.md)).
@@ -158,6 +165,28 @@ python3 calibration/calibrate.py tare       # 로드셀 영점
 python3 calibration/imu_calibrate.py --auto # IMU 보정 (rest pose, 정지)
 LOG_SECONDS=60 python3 pipeline.py
 ```
+
+## 벨트 누름 추정 실물 테스트 (`belt_test.py`)
+
+주행 없이 짐을 쌓고 벨트를 조이기만 하면, 벨트마다 추정한 k · 누름 자리 x, y 를 출력하고 끝난다.
+추정은 판정과 같은 코드(`analysis/belt_fit.py`)다.
+
+```bash
+source acquisition/env.sh
+python3 belt_test.py                        # 두 벨트가 다 추정되고 5초 그대로면 끝 (Enter · Ctrl+C 로 언제든)
+python3 belt_test.py --wait                 # 자동으로 안 끝낸다. Enter · Ctrl+C 로 끝
+python3 belt_test.py --replay logs/<이름>.csv   # 기록 CSV 로 다시 돌린다 (PC 에서도)
+```
+
+1. 짐을 다 쌓고 **벨트는 푼 채** 손을 떼고 3초 기다린다 → 기준 (장력 0 일 때 무게 · 무게중심)
+2. 앞 벨트를 조이고 손을 뗀다 (0.3초 넘게 가만히) → 앞 벨트 추정. 한 번에 8N 넘게, 되도록 15N 이상
+3. 뒤 벨트를 조이고 손을 뗀다 → 뒤 벨트 추정
+4. (선택) 한쪽 벨트를 반쯤 풀고 손을 뗀다 → **검증**. 장력이 준 구간은 배우지 않아서 진짜 시험이 된다
+5. 5초 그대로 두면 끝난다
+
+끝나면 최종 추정값과, 멈춘 구간마다 장력 0 기준 대비 화물 무게 · 무게중심 오차를 보정 전 / 시작값 고정 / 추정값으로 보여 준다.
+'학습' 구간은 추정에 쓴 구간이라 추정값 오차가 좋게 나오고, '검증' 구간이 실제 성능이다.
+기록은 `pipeline.py` 와 같은 CSV / 엑셀로 `LOG_DIR` 에 `belt_<시각>` 이름으로 남고, 결과는 `<이름>_belt.txt` 에도 적는다.
 
 ## IMU (MPU-6050)
 

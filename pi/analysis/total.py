@@ -1,11 +1,13 @@
 """총하중 판정. 바닥 셀 합에서 벨트가 누르는 힘을 빼 실제 화물 무게를 내고, 적정 적재중량 RATED_KG 와 비교한다.
 
-벨트는 화물 위로 감겨 판 아래(차체)에 걸려 있다. 장력 T 인 벨트 하나는 양쪽 끈으로 화물을 2 T sinα 만큼
-바닥 셀 쪽으로 누르므로(tension.py 의 위로 감기와 같은 그림, α = TENSION_ANGLE) 셀 합이 그만큼 무겁게 나온다.
-    셀 합 = 화물 x az + Σ 2 T sinα / g        ->        화물 = (셀 합 - Σ 2 T sinα / g) / az
+벨트는 화물 위로 감겨 판 아래(차체)에 걸려 있다. 장력 T 인 벨트 하나는 양쪽 끈으로 화물을 k T 만큼
+바닥 셀 쪽으로 누르므로(이론 k = 2 sinα, tension.py 의 위로 감기와 같은 그림) 셀 합이 그만큼 무겁게 나온다.
+    셀 합 = 화물 x az + Σ k T / g        ->        화물 = (셀 합 - Σ k T / g) / az
 벨트 누름은 장력 셀이 바로 재므로 먼저 빼고, 남은 화물 몫만 IMU az 로 나눠 위아래 출렁임을 뺀다.
+k 는 벨트마다 belt_fit.py 가 조일 때의 셀 변화로 추정한다 (시작값 BELT_K).
 2026-10-04 기록 (정차 · 정속 · 급출발급정거 · 우회전 · 화물추락 · 장력느슨, 화물 약 13.8kg):
 셀 합 14.5 ~ 16.7kg -> 뺀 뒤 13.5 ~ 13.9kg. 데이터로 맞춘 계수도 1.96 으로 이론값 2 sin90° = 2 와 같다.
+2026-10-25 장력꽉 기록에서는 벨트마다 달라 앞 2.1, 뒤 1.9 로 나왔다.
 비교용으로 벨트 누름을 빼지 않은 측정 무게(셀 합 / az, 예전 load.py 값)도 같이 낸다.
 
 위험도 4단계는 화물이 적정 적재중량의 몇 % 인지로 정한다.
@@ -31,14 +33,13 @@ class TotalLoadCheck:
     def __init__(self, cfg):
         # 바닥 하중 셀 라벨 (예: SW, SE, NW, NE), 벨트 장력 셀 라벨 (예: c1, c2)
         self.floor_labels, self.belt_labels, _ = cfg.roles()
-        # 벨트 장력 1N 이 바닥 셀 합에 더하는 무게(g) = 2 sinα / g x 1000
-        self.push_g_per_n = cfg.belt_push_g_per_n()
         # 무게(g) 지수 평활기. 화물 무게용 / 측정 무게용
         self.smooth_cargo = Ema(SMOOTH_S)
         self.smooth_measured = Ema(SMOOTH_S)
 
-    def __call__(self, t, frame, imu):
-        """t = 경과(초), frame = 이번 프레임, imu = 차체 IMU 값 (없으면 None).
+    def __call__(self, t, frame, imu, belts):
+        """t = 경과(초), frame = 이번 프레임, imu = 차체 IMU 값 (없으면 None),
+        belts = {장력 라벨: Belt} 벨트마다 추정한 누름 계수 (belt_fit.py).
         -> (화물 무게 kg, 측정 무게 kg, Check). 바닥 셀 값이 없으면 두 무게 다 None.
         화물 무게 = 벨트 누름을 뺀 값, 측정 무게 = 셀 합 그대로 (둘 다 az 로 나누고 평활).
         장력 셀 값이 없으면 그 벨트는 0N 으로 본다 (무겁게 나와 안전한 쪽)."""
@@ -51,7 +52,7 @@ class TotalLoadCheck:
         # 벨트마다 잰 장력(N). 값이 없으면 None
         belt_n = {label: frame.tension_n.get(label) for label in self.belt_labels}
         # 벨트들이 화물을 눌러 바닥 셀 합에 더해진 무게(g). 느슨하면 장력이 음수로 읽히니 0 으로 친다
-        belt_push_g = self.push_g_per_n * sum(max(0.0, n) for n in belt_n.values() if n is not None)
+        belt_push_g = sum(belts[label].g_per_n * max(0.0, n) for label, n in belt_n.items() if n is not None)
 
         # 측정 무게(kg) = 셀 합 그대로, 실제 화물 무게(kg) = 셀 합 - 벨트 누름. 둘 다 az 로 나눠 출렁임을 빼고 평활
         measured_kg = self.smooth_measured(t, static_g(floor_total_g, imu)) / 1000

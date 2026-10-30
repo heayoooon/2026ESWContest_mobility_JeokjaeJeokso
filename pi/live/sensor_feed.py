@@ -34,7 +34,8 @@ r1 = lambda v, d=1: None if v is None else round(float(v), d)  # noqa: E731
 
 JUDGE = ['algo', 'risk', 'risk_overall', 'lv_load', 'lv_cog', 'lv_move', 'lv_c1', 'lv_c2', 'risk_text', 'load_kg', 'measured_kg',
          'rated_kg', 'cog_x_mm', 'cog_y_mm', 'cog_pred_x_mm', 'cog_pred_y_mm', 'cog_static_x_mm', 'cog_static_y_mm',
-         'h_x_mm', 'h_y_mm', 'c1_min_N', 'c2_min_N', 'tension_max_N', 'cog_x_pct', 'cog_y_pct']
+         'h_x_mm', 'h_y_mm', 'c1_min_N', 'c2_min_N', 'tension_max_N', 'cog_x_pct', 'cog_y_pct',
+         'c1_k', 'c1_px_mm', 'c1_py_mm', 'c2_k', 'c2_px_mm', 'c2_py_mm']     # 벨트 누름 계수 · 자리 추정 (belt_fit.py)
 IMU_F = ['ax_G', 'ay_G', 'az_G', 'gx_dps', 'gy_dps', 'gz_dps', 'roll_deg', 'pitch_deg']
 
 
@@ -74,6 +75,8 @@ def row(f, res, cfg):
         h_x_mm=r1(abs(tr.kx)) if tr and tr.kx is not None else None, h_y_mm=r1(abs(tr.ky)) if tr and tr.ky is not None else None,
         c1_min_N=r1(res.tension_min.get('c1'), 2), c2_min_N=r1(res.tension_min.get('c2'), 2),
         tension_max_N=cfg.tension_max)
+    for k, b in res.belts.items():                       # 벨트 누름 계수 · 자리 추정. 위치를 모르는 벨트는 k 만
+        s.update({k + '_k': r1(b.k, 3), k + '_px_mm': r1(b.x), k + '_py_mm': r1(b.y)})
     if s.get('cog_x_mm') is not None:                    # 옛 화면 호환: % 무게중심
         s['cog_x_pct'] = round(s['cog_x_mm'] / cfg.bed_l * 100, 1)
         s['cog_y_pct'] = round(s['cog_y_mm'] / cfg.bed_w * 100, 1)

@@ -34,6 +34,12 @@ HX711
                벨트가 누르는 힘을 그 위치에서 빼서 화물 무게중심을 내고(무게중심 · 화물 이동 판정도 이 값),
                두 벨트 사이 어디에 무게중심이 있는지로 몫을 나눈다.
                둘 다 기본값이면 몫은 예전 계산(앞쪽 두 셀 무게 / 뒤쪽 두 셀 무게)과 같다. BED_L/BED_W 가 있어야 쓴다
+               BELT_FIT=1 이면 이 위치는 시작값이고, 벨트를 조일 때의 셀 변화로 고쳐 나간다 (analysis/belt_fit.py)
+  BELT_K       벨트 장력 1N 이 화물을 바닥 쪽으로 누르는 힘(N). 이론 2 sinα, 셀 합에서 k x 장력 / g 를 뺀다
+               BELT_FIT=1 이면 시작값                                        기본 1.9
+               (2026-10-04 기록 1.96, 2026-10-25 장력꽉 앞 2.1 / 뒤 1.9)
+  BELT_FIT     1 이면 정차 중 벨트를 조이거나 풀 때의 셀 변화로 벨트마다 k 와 누름 자리 x, y 를 추정한다.
+               0 이면 BELT_K, BELT_N_Y / BELT_S_Y 고정 (x 는 화물 무게중심 X 를 누른다고 본다)   기본 1
 
 판정 · 위험도 (analysis/, pipeline.py). 정상 / 주의 / 경고 / 위험 4단계 (판정 4개 다 쓴다)
   적재 기준(적정 적재중량 kg, 주의 · 경고 · 위험 %)은 환경변수가 아니라 analysis/total.py 맨 위 상수다
@@ -69,8 +75,7 @@ HX711
   TENSION_ANGLE 벨트가 바닥과 이루는 각(°)                       기본 90
                장력 하한(N) = 그 벨트가 맡은 무게(kg) x g(A - MU) fs / (2 MU sin ANGLE)   (EN 12195-1 식 10, 위로 감기)
                하한의 100% 밑 주의, 75% 밑 경고, 50% 밑 위험 (analysis/tension.py)
-               벨트가 화물을 누르는 힘(장력 x 2 sin ANGLE)은 바닥 셀에 더해지므로 적재 무게 ·
-               장력 하한을 낼 때 빼는 데도 이 각을 쓴다
+               벨트가 화물을 누르는 힘(장력 x BELT_K)은 바닥 셀에 더해지므로 적재 무게 · 장력 하한을 낼 때 뺀다
   TENSION_FLOOR 장력 하한의 최솟값(N). 화물이 가벼워도 벨트는 이만큼은 팽팽해야 한다  기본 2
   TENSION_MAX  장력 상한(N) = 벨트 · 장력 셀이 견디는 힘 (EN 12195-1 의 LC).
                50% 넘으면 주의(과조임), 75% 경고, 100% 위험         기본 80
@@ -103,7 +108,6 @@ MPU-6050
   # 모듈별 SCK (4모서리)
   HX_SCK=21,26,17,13 HX_DT=20,16,18,19 HX_LABELS=SW,SE,NW,NE python3 acquisition/log_sync.py
 """
-import math
 import os
 import time
 
@@ -159,6 +163,8 @@ class Config:
         self.bed_w = _float("BED_W", 0) or None
         self.belt_n_y = _float("BELT_N_Y", 0)
         self.belt_s_y = _float("BELT_S_Y", self.bed_w or 0)
+        self.belt_k = _float("BELT_K", 1.9)
+        self.belt_fit = _int("BELT_FIT", 1)
 
         # --- MPU-6050 ----------------------------------------------------
         self.imu_bus = _int("IMU_BUS", 1)
@@ -253,6 +259,10 @@ class Config:
         if self.bed_w is not None and not self.belt_n_y < self.belt_s_y:
             raise SystemExit("BELT_N_Y < BELT_S_Y (mm, 앞쪽 셀 줄에서 뒤로 잰 거리): %g, %g"
                              % (self.belt_n_y, self.belt_s_y))
+        if not 0 < self.belt_k <= 4:
+            raise SystemExit("BELT_K 는 0 초과 4 이하 (장력 1N 이 누르는 힘 N, 이론 2 sinα): %g" % self.belt_k)
+        if self.belt_fit not in (0, 1):
+            raise SystemExit("BELT_FIT 은 0(고정) 또는 1(조일 때 추정): %d" % self.belt_fit)
         if not 0 <= self.cog_danger < self.cog_warning < self.cog_caution < 50:
             raise SystemExit("0 <= COG_DANGER < COG_WARNING < COG_CAUTION < 50 (가장자리에서 셀 간격 %%): %g, %g, %g"
                              % (self.cog_danger, self.cog_warning, self.cog_caution))
@@ -299,9 +309,9 @@ class Config:
         return {t: sides[i] if i < len(sides) else ("전체", None) for i, t in enumerate(tension)}
 
     def belt_push_g_per_n(self):
-        """벨트 장력 1N 이 바닥 셀 합에 더하는 무게(g). 화물 위로 감은 벨트는 양쪽 끈이
-        2 T sin ANGLE 로 화물을 바닥 쪽으로 누른다 (2026-10-04 기록에서 맞춘 계수 1.96 ~ 이론 2)."""
-        return 2 * math.sin(math.radians(self.tension_angle)) / G * 1000
+        """벨트 장력 1N 이 바닥 셀 합에 더하는 무게(g), 시작값. 화물 위로 감은 벨트는 양쪽 끈이
+        BELT_K x T 로 화물을 바닥 쪽으로 누른다 (이론 2 sin ANGLE). 판정은 벨트마다 추정한 값을 쓴다 (analysis/belt_fit.py)."""
+        return self.belt_k / G * 1000
 
     def as_dict(self):
         return {
@@ -387,6 +397,8 @@ class Config:
             lines.append("             하한의 %d%% 밑 주의, %d%% 경고, %d%% 위험 / 상한 %gN 의 %d%% 넘으면 주의, %d%% 경고, %d%% 위험" % (
                 tension.LOW_CAUTION_PCT, tension.LOW_WARNING_PCT, tension.LOW_DANGER_PCT, self.tension_max,
                 tension.HIGH_CAUTION_PCT, tension.HIGH_WARNING_PCT, tension.HIGH_DANGER_PCT))
+            lines.append("             벨트 누름 k %g%s" % (
+                self.belt_k, ", 누름 자리와 같이 정차 중 조일 때 추정" if self.belt_fit else " 고정 (BELT_FIT=0)"))
         lines.append("       종합  적재 · 무게중심 · 장력(나쁜 벨트) 단계를 안전 여유 곱으로 합침: 하나라도 위험이면 위험, "
                      "경고 둘 -> 위험, 주의 셋 -> 경고. 화물 이동은 안 넣고 따로 알림")
         return "\n".join(lines)
