@@ -8,8 +8,10 @@ sensor_feed.py 가 UDP 127.0.0.1:5020 으로 넘기는 최신 센서 · 위험 �
 설치 보정(카메라 기울기 R, 바닥 높이 ref_h)은 시작할 때 한 번: 카메라 IMU 1 초 평균 + 첫 깊이 프레임의 가장 흔한 높이.
 디스플레이의 '화면 멈춤' 단추는 UDP 5011 'pause' / 'resume' 으로 온다 (멈춘 동안 보내지 않는다).
 
-usage: ~/d435i/.venv/bin/python live_twin.py [dest[:port],...] [--hz 10]
+usage: ~/d435i/.venv/bin/python live_twin.py [dest[:port],...] [--hz 10] [--mirror host[:port],...]
   dest 기본 192.168.10.2 (디스플레이 파이 LAN). Tailscale 이면 100.90.251.42
+  --mirror 같은 프레임을 따로 받을 곳 (예: Isaac Sim 트윈 PC, isaac_sim/scripts/live_link.py 포트 5010).
+           자기 송신 스레드로 보내서, 그쪽이 꺼져 있어도 디스플레이 송신은 느려지지 않는다.
 """
 import argparse, io, json, os, socket, struct, sys, threading, time, zlib
 import numpy as np
@@ -70,6 +72,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('dest', nargs='?', default='192.168.10.2')
     ap.add_argument('--hz', type=float, default=10)
+    ap.add_argument('--mirror', default='', help='같은 프레임을 따로 받을 곳 (예: Isaac Sim 트윈 PC host:5010)')
     ap.add_argument('--cell', type=float, default=0.01)
     ap.add_argument('--roi', type=float, nargs=4, default=[-.27, .27, .05, .50], metavar=('X0', 'X1', 'Y0', 'Y1'))
     ap.add_argument('--sensor-port', type=int, default=5020)
@@ -77,6 +80,7 @@ def main():
     ap.add_argument('--plate-above-floor', type=float, default=0.208, help='판 윗면이 기준(방바닥)보다 높은 만큼 (m)')
     args = ap.parse_args()
     dests = [(h, int(p or 5010)) for h, _, p in (d.partition(':') for d in args.dest.split(','))]
+    mirrors = [(h, int(p or 5010)) for h, _, p in (d.partition(':') for d in args.mirror.split(',') if d)]
     threading.Thread(target=sensor_listener, args=(args.sensor_port,), daemon=True).start()
     threading.Thread(target=control_listener, daemon=True).start()
 
@@ -156,11 +160,35 @@ def main():
         intr_d = {k: getattr(intr, k) for k in ('width', 'height', 'fx', 'fy', 'ppx', 'ppy')}
 
         sock = ReliableSender()
+        # 미러: 디스플레이와 같은 연결로 보내면 미러가 꺼져 있을 때 연결 시도(3 s x 2)마다 디스플레이 프레임까지 막힌다.
+        # 따로 돌면서 가장 최근 프레임만 보내고, 실패하면 2 s 쉬었다 다시 한다.
+        mirror_box, mirror_cv = [None], threading.Condition()
+
+        def mirror_sender():
+            msock, merr = ReliableSender(), 0
+            while True:
+                with mirror_cv:
+                    while mirror_box[0] is None:
+                        mirror_cv.wait()
+                    pkt, mirror_box[0] = mirror_box[0], None
+                try:
+                    send_packet(msock, mirrors, *pkt)
+                    if merr:
+                        print('미러 다시 연결됨 %s' % mirrors, flush=True)
+                    merr = 0
+                except OSError as e:
+                    merr += 1
+                    if merr == 1:
+                        print('미러 %s 에 못 보냄 (%s) - 2 s 마다 다시 시도 (디스플레이 송신은 그대로)' % (mirrors, e), flush=True)
+                    time.sleep(2.0)
+
+        if mirrors:
+            threading.Thread(target=mirror_sender, daemon=True).start()
         seq, t0 = 0, time.time()
         period = 1.0 / args.hz
         next_t = time.time()
         proc, sizes, errors, last_print = [], [], 0, 0.0
-        print('-> %s  %.0f Hz' % (dests, args.hz), flush=True)
+        print('-> %s  %.0f Hz%s' % (dests, args.hz, ('  미러 %s' % mirrors) if mirrors else ''), flush=True)
         while True:
             d, c = next_pair()
             now = time.time()
@@ -220,6 +248,10 @@ def main():
                     rec.write(struct.pack('!dI', time.time(), len(blob)) + blob)
                 except (OSError, ValueError):
                     pass
+            if mirrors:
+                with mirror_cv:
+                    mirror_box[0] = (seq, header, hb, cb, db, rb)
+                    mirror_cv.notify()
             try:
                 size, _ = send_packet(sock, dests, seq, header, hb, cb, db, rb)
                 sizes.append(size)
