@@ -289,6 +289,11 @@ The older `Start-IsaacTwin.bat` and original scripts are preserved.
   deck (the display's fixed .365 m foundation is its own camera reference). 13-24 ms per new frame (10 Hz); the
   twin stays at ~30 FPS. A higher-resolution depth stream was not pursued: the Pi already decimates 848x480 to 424x240
   at ~26-33 ms per frame and the display Pi gets the same frames.
+  Review fixes (PR #34): StackLayers gets the frame as received (as twin_server does) and one StackLayers lives for
+  good (its own reset keeps the cargo floor and the last layers); a stale live link (> 2 s) feeds no sensor row and
+  clears the cargo instead of judging / recording the last reading; switching live on clears the replay cargo; live
+  off restarts the recording at 0 s; recorder rows say mode 'live'. cargo_boxes falls back to ../display/twin/server
+  inside the team repo when team_display/ was not synced.
 
 ## Realistic update - 2026-10-05
 

@@ -13,3 +13,7 @@ exports/
 captures/
 *.log
 __pycache__/
+verification.json
+scenarios.json
+forest_data.json
+share_log.txt

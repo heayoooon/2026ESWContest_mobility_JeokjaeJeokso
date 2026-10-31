@@ -19,6 +19,9 @@ from pathlib import Path
 import numpy as np
 
 TEAM_DISPLAY = Path(__file__).resolve().parents[1] / 'team_display'
+if not (TEAM_DISPLAY / 'cargo_model.py').exists():
+    # inside the team repo (isaac_sim/) the display code sits next door - use it when nothing was synced
+    TEAM_DISPLAY = Path(__file__).resolve().parents[2] / 'display' / 'twin' / 'server'
 if str(TEAM_DISPLAY) not in sys.path:
     sys.path.insert(0, str(TEAM_DISPLAY))
 from cargo_model import CargoModel          # noqa: E402  (team display code)
@@ -52,10 +55,13 @@ class DisplayBoxes:
     """twin_view.StableBoxMesh.build (mode 0) + twin_server's StackLayers step, without the GL parts."""
 
     def __init__(self):
+        # One StackLayers for good, as on the display: its own reset (new run / time going back) keeps the cargo
+        # floor and the last layer shape ('carry'), so stacked cargo is not shown as one block after a switch.
+        self.layers = StackLayers()
         self.reset()
 
     def reset(self):
-        self.model = CargoModel();self.twin = StableTwin();self.sh = StableHeight();self.layers = StackLayers()
+        self.model = CargoModel();self.twin = StableTwin();self.sh = StableHeight()
         self.stamp = None;self.ready = False;self.refit = 0;self.fit_depth = None
         self.mesh_boxes = [];self.base = .34;self.base_locked = None
         self.boxes = [];self.floor = None
@@ -96,8 +102,7 @@ class DisplayBoxes:
                 if not self.ready:
                     self.base_locked = self.base
                 self.ready = True
-            frame = dict(frame, depth=np.clip(d, 0, 65535).astype(np.uint16), rgb=np.clip(c, 0, 255).astype(np.uint8))
-        try:
+        try:                                         # twin_server: StackLayers reads the frame as received
             self.boxes, floor = self.layers.update(frame, self.mesh_boxes)
         except Exception:                            # twin_server does the same: fall back to the plain boxes
             self.boxes, floor = list(self.mesh_boxes or []), None

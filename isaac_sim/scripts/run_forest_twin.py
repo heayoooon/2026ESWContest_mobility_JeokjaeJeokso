@@ -1405,6 +1405,7 @@ class Twin:
             self.live_on=True;self.live_count=0;self.live_cam=None;self.live_ts=None
             if self.mode!=0:
                 self.set_mode(0)
+            self.clear_cargo_view()          # nothing of the replay stays on the plate until the first live frame
             self.playing=True;self.surface_index=-1;self.cam_shown=-1
             self.shift.reset()
             if self.team_live is not None:
@@ -1413,6 +1414,7 @@ class Twin:
             self.last_export=f'Live: {message}'
             return {'ok':True,'message':message}
         self.live.stop();self.live_on=False
+        self.t=0.                            # the clock ran on during live: start the recording from its beginning
         cache=self.load_cache(self.cases[self.index])
         self.surface.set_camera(cache['camera'],cache['grid'])
         self.surface_index=-1;self.cam_shown=-1;self.shift.reset()
@@ -1420,8 +1422,16 @@ class Twin:
         self.last_export='Live: off'
         return {'ok':True,'message':'live off - back to the recording'}
 
+    def clear_cargo_view(self):
+        cache=self.load_cache(self.cases[self.index])
+        self.surface.update(np.zeros(cache['depth'][0].shape,np.uint16),None)
+        self.box_drawer.draw([],None);self.box_model.reset()
+
     def live_row(self):
-        """The newest sensor row from the Pi (its own column names), timed by the twin's clock."""
+        """The newest sensor row from the Pi (its own column names), timed by the twin's clock. Nothing when the
+        link is stale, so an old reading is never judged, recorded or sent on as if it were current."""
+        if not self.live.receiving():
+            return {'t':self.t}
         frame,_=self.live.latest()
         sensors=(frame or {}).get('sensors') or {}
         f={k:v for k,v in sensors.items() if k!='check_text'}
@@ -1431,7 +1441,12 @@ class Twin:
     def update_live(self):
         """Redraw the measured surface from the newest live frame (only when a new one has arrived)."""
         frame,count=self.live.latest()
+        if not self.live.receiving():
+            if self.live_count>0 and not getattr(self,'live_cleared',False):
+                self.clear_cargo_view();self.live_cleared=True   # link lost: do not keep showing the last cargo
+            frame=None
         if frame is not None and count!=self.live_count:
+            self.live_cleared=False
             blend=count==self.live_count+1
             cam=json.dumps([frame['camera']['intr'],frame['camera']['R'],frame['camera']['ref_h'],frame['grid']])
             if cam!=self.live_cam:            # first frame, or the Pi re-calibrated: new rays
@@ -1767,8 +1782,10 @@ class Twin:
     def build_row(self,rec_time):
         """One flat row of the twin's state and readings (recorder CSV / JSONL and live display frames)."""
         case=self.cases[self.index]
-        row={'rec_time_s':round(rec_time,3),'clock':time.strftime('%H:%M:%S'),'mode':'measured' if self.mode==0 else 'physics',
-             'run':case['id'],'replay_time_s':round(self.t,3),'vehicle_kmh':round(self.velocity*3.6,2),
+        live=self.live_on and self.mode==0
+        row={'rec_time_s':round(rec_time,3),'clock':time.strftime('%H:%M:%S'),
+             'mode':'live' if live else 'measured' if self.mode==0 else 'physics',
+             'run':case['id'],'replay_time_s':round(self.t,3),     # display_link needs a recording id for its camera frames'vehicle_kmh':round(self.velocity*3.6,2),
              'lap_s_m':round(float(self.s),2),'lane_d_m':round(float(self.d),3),'heading_deg':round(float(self.yaw),2),
              'road_slope_deg':self.value('grade'),'road_bank_deg':self.value('bank'),
              'cargo_mass_kg':self.value('mass'),'straps_connected':all(self.belts_hooked()),

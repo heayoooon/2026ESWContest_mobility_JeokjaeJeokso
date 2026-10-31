@@ -19,6 +19,7 @@
    그리고 `pip install opencv-python pillow`.
 2. Kit 설정 설치 (한 번): `python install_kit.py` (그 환경의 python 으로). 한국어 패널 글꼴 경로를 이 폴더로 채워 넣습니다.
 3. 팀 코드 가져오기: `python scripts/sync_team_analysis.py --part all` → `team/` (판정 코드) · `team_display/` (상자 코드).
+   이 저장소 안에서는 `team_display/` 가 없으면 옆의 `display/twin/server` 를 바로 씁니다.
 4. NVIDIA 무료 자산(나무 · 풀 · 하늘 · 사람, 약 600 MB): `python scripts/fetch_nvidia_assets.py` → `assets/nvidia/`.
 5. 실행: `Start-ForestTwin.bat` (창) 또는 `Start-ForestTwin-Share.bat` (브라우저 공유 + 원격 API).
    다른 경로의 python 이면 `set ISAAC_PY=…\python.exe` 후 실행.
