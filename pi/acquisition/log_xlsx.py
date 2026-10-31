@@ -75,6 +75,10 @@ class XlsxSink:
             h = ("h_%s_mm" if cfg.bed_l else "k_%s_pct")
             cols += ["cog_pred_x_" + unit, "cog_pred_y_" + unit, h % "y", h % "x"]
         cols += ["%s_min_N" % l for l in self.tension]
+        # 벨트마다 추정한 누름 계수 k · 누름 자리 x, y (analysis/belt_fit.py). 위치를 아는 벨트(N · S)만
+        self.located = [l for l, (_, y) in cfg.belt_sides().items() if y is not None]
+        for l in self.located:
+            cols += ["%s_k" % l, "%s_px_%s" % (l, unit), "%s_py_%s" % (l, unit)]
         cols.append("risk")
         cols += ["lv_" + k for k, _ in self.checks]
         cols.append("risk_text")
@@ -115,6 +119,9 @@ class XlsxSink:
             else:
                 out += [None] * 4
         out += [_round(result.tension_min.get(l), 2) for l in self.tension]
+        for l in self.located:
+            b = result.belts[l]
+            out += [round(b.k, 3), _round(b.x, 1), _round(b.y, 1)]
         out.append(result.level)
         out += [ch.level for ch in result.checks]
         out.append(" | ".join("%s %s: %s" % (risk_name(ch.level), ch.name, ch.text)
@@ -277,6 +284,10 @@ def pretty(col):
         return "예측 무게중심 %s(%s)" % (name[9:].upper(), UNIT[unit])
     if name.startswith("cog_"):
         return "무게중심 %s(%s)" % (name[4:].upper(), UNIT[unit])
+    if unit == "k":
+        return "%s 누름 계수 k" % name
+    if name.endswith(("_px", "_py")):
+        return "%s 누름 %s(%s)" % (name[:-3], name[-1].upper(), UNIT[unit])
     if name.endswith("_min") and unit == "N":
         return "%s 장력 하한(N)" % name[:-4]
     if unit == "N":
@@ -290,7 +301,7 @@ def group(col):
     """머리글 색 묶음."""
     if col in ("time", "t_s"):
         return "time"
-    if col in ("load_kg", "risk", "risk_text") or col.endswith("_min_N") \
+    if col in ("load_kg", "risk", "risk_text") or col.endswith(("_min_N", "_k")) or "_px_" in col or "_py_" in col \
             or col.startswith(("cog_pred_", "h_", "k_", "lv_")):
         return "judge"
     if col.endswith("_raw") or col == "flags":
