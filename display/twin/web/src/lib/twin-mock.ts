@@ -6,7 +6,7 @@
  */
 import { useEffect, useState } from 'react'
 import sampleJson from './twin-sample-1004.json'
-import type { ControlCmd, RiskLevel, TwinAlert, TwinRisk, TwinState, VolumeAction } from './twin-types'
+import type { ControlCmd, DriveMode, RiskLevel, TwinAlert, TwinRisk, TwinState, VolumeAction } from './twin-types'
 
 const SAMPLE = sampleJson as unknown as TwinState
 const PHASE_S = 7
@@ -98,6 +98,7 @@ class MockEngine {
   simT = 0
   frames = 0
   paused = false
+  mode: DriveMode = 'load'
   volume = { level: 0.8, muted: false }
   signal = new URLSearchParams(location.search).get('mockSignal') !== '0'
   /** ?mockPhase=4 이면 그 장면에 머문다 */
@@ -192,6 +193,7 @@ class MockEngine {
       connected: this.signal,
       paused: this.paused,
       source: this.signal ? 'replay' : 'none',
+      mode: this.signal ? this.mode : null,
       run: ph.run,
       scenario: ph.scenario,
       t_run: (inPhase / PHASE_S) * ph.dur,
@@ -231,6 +233,11 @@ class MockEngine {
     return Promise.resolve({ ok: true })
   }
 
+  setMode(mode: DriveMode) {
+    this.mode = mode
+    return Promise.resolve({ ok: true, mode, sent: true })
+  }
+
   setVolume(action: VolumeAction, value?: number) {
     const v = this.volume
     if (action === 'up') v.level = Math.min(1.5, v.level + 0.05)
@@ -257,6 +264,7 @@ export function useMockTwinState() {
 /** twin-api 의 함수들과 같은 모양의 모의 함수 */
 export const mockApi = {
   sendControl: (cmd: ControlCmd) => getEngine().control(cmd),
+  sendMode: (mode: DriveMode) => getEngine().setMode(mode),
   setVolume: (action: VolumeAction, value?: number) => getEngine().setVolume(action, value),
   exitApp: () => Promise.resolve({ ok: true, mock: true }),
   reportStats: (stats: Record<string, number | string>) => {

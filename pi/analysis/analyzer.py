@@ -14,6 +14,9 @@
 벨트마다 누름 계수 k 와 누름 자리 (x, y) 는 정차 중 벨트를 조일 때의 셀 변화로 추정한다 (belt_fit.py, Result.belts).
 적재 · 무게중심 · 장력 판정이 다 이 추정값으로 누름을 뺀다.
 
+적재 · 주행 모드 (set_mode): 판정은 두 모드가 같다. 적재 모드에서만 벨트 k, x, y 를 추정하고, 주행으로 바꾸는 순간
+그 값을 확정해 주행 내내 쓰며 화물 이동 기준을 다시 잡는다 (rebase). 처음은 적재 모드다.
+
 종합 위험도(Result.level)는 적재 · 무게중심 · 장력의 단계(0~3)를 안전 여유 곱으로 합친 것이다 (overall.py).
 판정 하나가 위험이면 종합도 위험이고, 여러 판정이 같이 나쁘면 한 단계 위로 올라간다 (경고 둘 -> 위험, 주의 셋 -> 경고).
 화물 이동은 종합에 안 넣고 따로 알린다 (checks 의 "move").
@@ -79,6 +82,23 @@ class Analyzer:
         self.last = {k: None for k, _ in self.checks}
         self.last_level = None                  # 지난 프레임 종합 위험도
         self.rebase_n = 0                       # 기준 재설정을 받은 횟수
+        self.mode = "load"                      # 적재 / 주행 (set_mode). 판정은 둘 다 같고 벨트 추정만 다르다
+
+    def set_mode(self, mode):
+        """적재("load") / 주행("drive"). 바뀌었으면 True.
+        적재 -> 주행: 벨트 k, x, y 를 지금 값으로 확정 · 고정하고(belt_fit.freeze) 화물 이동 기준을 다시 잡는다(rebase).
+        주행 -> 적재: 벨트 추정을 다시 켠다(belt_fit.thaw). 경보음을 끄는 것은 화면 쪽 일이다."""
+        if mode not in ("load", "drive"):
+            raise ValueError("mode 는 load 또는 drive: %r" % mode)
+        if mode == self.mode:
+            return False
+        if mode == "drive":
+            self.belt_fit.freeze()
+            self.rebase()
+        else:
+            self.belt_fit.thaw()
+        self.mode = mode
+        return True
 
     def rebase(self):
         """기준 재설정: 지금 상태를 정상 기준으로 삼는다. 화물 이동 판정(기준 위치, 학습한 h, 붙잡고 있던 알림)만

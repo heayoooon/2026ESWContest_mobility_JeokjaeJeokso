@@ -12,6 +12,8 @@ pipeline.py 와 HX711 을 같이 쓸 수 없다 -> 실시간 트윈을 돌리는
 
 실측 구간 저장: UDP 127.0.0.1:5022 로 'start <폴더>' / 'stop' / 'status' (rec.sh 가 보낸다).
   start 이면 <폴더>/sensors.csv 에 그때부터 stop 까지의 행을 쓰고, stop 때 <폴더>/summary.json 을 남긴다.
+적재 · 주행 모드: UDP 5023 (LAN) 으로 'mode load' / 'mode drive' (디스플레이의 적재 · 주행 단추가 보낸다).
+  다음 프레임부터 Analyzer.set_mode 로 바뀌고, 지금 모드는 sensors 의 mode 로 나간다. 켤 때는 적재.
 
 usage: python3 sensor_feed.py [--port 5020]   (보통 run_live.sh 가 acquisition/env.sh 를 읽고 띄운다)
 """
@@ -29,13 +31,14 @@ from analysis.risk import name as risk_name               # noqa: E402
 from analysis import total                                # noqa: E402
 
 MCAST = ('239.255.42.21', 5021)   # 누구나 받아 보는 곳 (watch_sensors.py)
+MODE_PORT = 5023                  # 디스플레이가 적재 · 주행 모드를 보내는 곳
 r1 = lambda v, d=1: None if v is None else round(float(v), d)  # noqa: E731
 
 
-JUDGE = ['algo', 'risk', 'risk_overall', 'lv_load', 'lv_cog', 'lv_move', 'lv_c1', 'lv_c2', 'risk_text', 'load_kg', 'measured_kg',
+JUDGE = ['mode', 'algo', 'risk', 'risk_overall', 'lv_load', 'lv_cog', 'lv_move', 'lv_c1', 'lv_c2', 'risk_text', 'load_kg', 'measured_kg',
          'rated_kg', 'cog_x_mm', 'cog_y_mm', 'cog_pred_x_mm', 'cog_pred_y_mm', 'cog_static_x_mm', 'cog_static_y_mm',
          'h_x_mm', 'h_y_mm', 'c1_min_N', 'c2_min_N', 'tension_max_N', 'cog_x_pct', 'cog_y_pct',
-         'c1_k', 'c1_px_mm', 'c1_py_mm', 'c2_k', 'c2_px_mm', 'c2_py_mm']     # 벨트 누름 계수 · 자리 추정 (belt_fit.py)
+         'c1_k', 'c1_px_mm', 'c1_py_mm', 'c1_steps', 'c2_k', 'c2_px_mm', 'c2_py_mm', 'c2_steps']  # 벨트 누름 계수 · 자리 추정 (belt_fit.py)
 IMU_F = ['ax_G', 'ay_G', 'az_G', 'gx_dps', 'gy_dps', 'gz_dps', 'roll_deg', 'pitch_deg']
 
 
@@ -46,9 +49,9 @@ def fields(cfg):
             + ['%s_%s' % (lab, k) for lab in cfg.imu_labels for k in IMU_F] + JUDGE + ['flags'])
 
 
-def row(f, res, cfg):
-    """프레임 + 판정 -> 디스플레이가 읽는 sensors 딕셔너리 (pipeline.py CSV 열 이름)."""
-    s = {'t_s': round(f.t_s, 3), 'wall': round(f.wall, 3), 'flags': '|'.join(f.flags)}
+def row(f, res, cfg, mode):
+    """프레임 + 판정 -> 디스플레이가 읽는 sensors 딕셔너리 (pipeline.py CSV 열 이름). mode = 적재 'load' / 주행 'drive'."""
+    s = {'t_s': round(f.t_s, 3), 'wall': round(f.wall, 3), 'flags': '|'.join(f.flags), 'mode': mode}
     for k, g in f.load_g.items():
         s[k + '_g'] = r1(g)
     s['total_g'] = r1(res.total_g)
@@ -75,8 +78,8 @@ def row(f, res, cfg):
         h_x_mm=r1(abs(tr.kx)) if tr and tr.kx is not None else None, h_y_mm=r1(abs(tr.ky)) if tr and tr.ky is not None else None,
         c1_min_N=r1(res.tension_min.get('c1'), 2), c2_min_N=r1(res.tension_min.get('c2'), 2),
         tension_max_N=cfg.tension_max)
-    for k, b in res.belts.items():                       # 벨트 누름 계수 · 자리 추정. 위치를 모르는 벨트는 k 만
-        s.update({k + '_k': r1(b.k, 3), k + '_px_mm': r1(b.x), k + '_py_mm': r1(b.y)})
+    for k, b in res.belts.items():                       # 벨트 누름 계수 · 자리 추정. 위치를 모르는 벨트는 k 만. steps 0 = 시작값
+        s.update({k + '_k': r1(b.k, 3), k + '_px_mm': r1(b.x), k + '_py_mm': r1(b.y), k + '_steps': b.steps})
     if s.get('cog_x_mm') is not None:                    # 옛 화면 호환: % 무게중심
         s['cog_x_pct'] = round(s['cog_x_mm'] / cfg.bed_l * 100, 1)
         s['cog_y_pct'] = round(s['cog_y_mm'] / cfg.bed_w * 100, 1)
@@ -85,6 +88,21 @@ def row(f, res, cfg):
 
 FIELDS = []
 REC = dict(dir=None, fh=None, w=None, n=0, t0=None, wall0=None, want=None, lock=threading.Lock(), last=None)
+MODE = {}                         # {'want': 'load' | 'drive'} 디스플레이가 보낸 모드. 다음 프레임에 Analyzer.set_mode 로 반영
+
+
+def mode_listener(port=MODE_PORT):
+    """디스플레이의 적재 · 주행 단추: 'mode load' / 'mode drive'. 답은 JSON 한 줄 {ok, mode}."""
+    c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    c.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    c.bind(('0.0.0.0', port))
+    while True:
+        data, addr = c.recvfrom(4096)
+        cmd, _, arg = data.decode(errors='ignore').strip().partition(' ')
+        ok = cmd == 'mode' and arg in ('load', 'drive')
+        if ok:
+            MODE['want'] = arg
+        c.sendto(json.dumps(dict(ok=ok, mode=arg if ok else None)).encode(), addr)
 
 
 def control_listener(port=5022):
@@ -162,10 +180,15 @@ def main():
     n = 0
     print('센서 -> 127.0.0.1:%d, 기록 %s' % (args.port, path), flush=True)
     threading.Thread(target=control_listener, daemon=True).start()
+    threading.Thread(target=mode_listener, daemon=True).start()
     try:
         for f in src.frames():
+            want = MODE.pop('want', None)               # 꺼내면서 지운다: 받는 스레드와 겹쳐도 단추 요청을 잃지 않는다
+            if want and analyze.set_mode(want):
+                b = {k: 'k %.2f y %s (%d회)' % (v.k, r1(v.y), v.steps) for k, v in analyze.belt_fit.belts.items()}
+                print('모드 -> %s  벨트 %s' % ('주행 (벨트 확정 · 기준 재설정)' if want == 'drive' else '적재 (벨트 추정 켬)', b), flush=True)
             res = analyze(f)
-            s = row(f, res, cfg)
+            s = row(f, res, cfg, analyze.mode)
             msg = json.dumps(s, ensure_ascii=False, separators=(',', ':')).encode()
             out.sendto(msg, ('127.0.0.1', args.port))
             try:
@@ -185,8 +208,8 @@ def main():
                 last_flush = now
             if now - last_print > 2.0:
                 last_print = now
-                print('%6.1fs %5d행  적재 %s kg  c1 %s N  c2 %s N  종합 %s  %s' % (
-                    f.t_s, n, s.get('load_kg'), s.get('c1_N'), s.get('c2_N'), risk_name(s.get('risk')),
+                print('%6.1fs %5d행  %s  적재 %s kg  c1 %s N  c2 %s N  종합 %s  %s' % (
+                    f.t_s, n, '주행' if s['mode'] == 'drive' else '적재', s.get('load_kg'), s.get('c1_N'), s.get('c2_N'), risk_name(s.get('risk')),
                     s.get('risk_overall') or ''), flush=True)
     except KeyboardInterrupt:
         pass

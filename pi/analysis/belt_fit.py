@@ -13,6 +13,10 @@ X 모멘트 = (앞오 + 뒤오) x L, Y 모멘트 = (뒤왼 + 뒤오) x W (cog.py
 그래서 앞 벨트를 조이고 0.8초 뒤 뒷벨트를 건드려도 그 0.8초로 앞 벨트를 내고 바로 뒷벨트로 넘어간다.
 두 벨트가 같이 바뀐 줄도 최소제곱이 같이 푼다 (한쪽을 먼저 알면 그만큼 빼고 푸는 것과 같다).
 
+적재 · 주행 모드 (analyzer.set_mode): 적재 모드에서만 추정한다. 주행으로 바꾸는 순간 freeze() 가 지금 멈춘 구간을
+'다음 변화' 를 기다리지 않고 확정하고, 주행하는 동안 그 k, x, y 를 그대로 쓴다. 적재로 돌아오면 thaw() 가 다시 추정을 켜고
+주행 전 기준 구간은 버린다 (달리는 동안 화물 · 장력이 바뀌었을 수 있다). 다음 CARGO_S 넘게 가만히 있는 구간이 새 기준이다.
+
 2026-10-25 장력꽉22 · 33 (정차, 벨트를 하나씩 조임): 멈춘 구간 1초 · 0.5초 · 0.3초 모두
 앞 k 2.0 ~ 2.1 (200 ~ 219g/N) y -56 ~ -60mm, 뒤 k 1.8 (176 ~ 188g/N) y 242 ~ 256mm 로 같게 나왔다.
 주행 기록으로는 안 맞는다. 장력이 1 ~ 3N 밖에 안 흔들리고, 그 흔들림도 화물 관성이 셀과 벨트를 같이 당겨서 생긴다.
@@ -133,10 +137,25 @@ class BeltFit:
         self.still = None                       # 지금 이어지는 구간
         self.fixed = dict(self.start)           # 확정한 줄로만 푼 값 (새 줄을 거를 때 쓴다)
         self.belts = dict(self.start)           # 지금 쓰는 값 = 확정한 줄 + 지금 멈춘 구간
+        self.frozen = False                     # 주행 모드: 추정을 멈추고 확정한 값을 그대로 쓴다
+
+    def freeze(self):
+        """주행 시작: 지금 멈춘 구간을 확정하고 추정을 멈춘다. 마지막 조임은 원래 다음 변화가 와야 확정되는데,
+        주행 버튼이 그 '다음 변화' 역할을 한다. STILL_S 도 안 멈춘 구간(조이는 중에 누름)은 버린다."""
+        if self.learn and not self.frozen:
+            self._close()
+            self.belts = dict(self.fixed)       # 확정한 줄로 푼 값만 쓴다. 줄로 못 받은 구간의 임시값은 버린다
+        self.frozen = True
+
+    def thaw(self):
+        """적재로 돌아옴: 다시 추정한다. 주행 전 기준 구간은 버리고 CARGO_S 넘게 멈춘 구간을 새 기준으로 잡는다.
+        확정한 줄과 지금 값은 그대로 둔다 (주행 중 푼 벨트의 줄은 새 기준을 잡을 때 버린다)."""
+        self.frozen = False
+        self.still = self.ref = self.ref_a = None
 
     def __call__(self, t, frame, imu):
         """-> {장력 라벨: Belt}. 장력 셀 전부 (위치를 모르는 벨트는 시작값 그대로)."""
-        if not self.learn:
+        if not self.learn or self.frozen:
             return self.belts
         g = [frame.load_g.get(c) for c in self.corners]
         tension = [frame.tension_n.get(label) for label in self.labels]
@@ -170,7 +189,10 @@ class BeltFit:
         mean, settled = s.mean(), s.t1 - s.t0 >= CARGO_S
         if self.ref is None:
             if settled:
+                self._drop_released(mean)
                 self.ref, self.ref_a = mean, s.a
+                self.fixed = self._fit(self.rows, self.fixed)
+                self.belts = dict(self.fixed)
             return
         dts = [x - r for x, r in zip(mean[3:], self.ref[3:])]
         dt = max(abs(x) for x in dts)
@@ -184,13 +206,16 @@ class BeltFit:
                 return
         elif not settled and (dt > STILL_N or abs(mean[0] - self.ref[0]) > GATE_G):
             return
-        # 푼 벨트는 다시 맬 때 자리가 바뀐다. 그 벨트가 들어간 줄을 버린다
-        for i, n in enumerate(mean[3:]):
-            if n < RELEASE_N:
-                self.rows = [r for r in self.rows if abs(r[0][i]) < STEP_N]
+        self._drop_released(mean)
         self.ref, self.ref_a = mean, s.a
         self.fixed = self._fit(self.rows, self.fixed)
         self.belts = dict(self.fixed)
+
+    def _drop_released(self, mean):
+        """푼 벨트는 다시 맬 때 자리가 바뀐다. 그 벨트가 들어간 줄을 버린다."""
+        for i, n in enumerate(mean[3:]):
+            if n < RELEASE_N:
+                self.rows = [r for r in self.rows if abs(r[0][i]) < STEP_N]
 
     def _row(self, mean, a):
         """기준 구간 -> mean 구간 (IMU 가속 a) 한 줄. 조인 게 아니거나(장력 변화가 작음 · 준 벨트가 있음),

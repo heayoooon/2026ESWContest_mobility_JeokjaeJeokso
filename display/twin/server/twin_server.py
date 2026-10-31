@@ -5,6 +5,8 @@
   처리: twin_view.StableBoxMesh (2.5D 상자 모형) + stack_layers.StackLayers (쌓인 상자 층 · 옆 짐)
         + 센서 파이 위험 판정(sensors 의 risk · lv_* · risk_text) + hud_v3.Voice (경보음 · 음성, USB 스피커).
   일시정지: 화면만 멈춘다 (받은 프레임을 버린다). 보내는 쪽 UDP 5011 로 'pause' / 'resume' 도 보낸다 (듣고 있으면).
+  적재 · 주행 모드: 보내는 쪽 UDP 5023 으로 'mode load' / 'mode drive' (센서 파이 sensor_feed.py 가 판정기에 반영).
+        지금 모드는 sensors 의 mode 로 돌아온다. 화면은 두 모드가 같고, 적재 모드에서는 경고음 · 주의음만 안 낸다.
 
 HTTP (계약: web/src/lib/twin-types.ts, twin-api.ts)
   GET  /                 ../www (빌드된 화면, SPA, 없는 경로는 index.html). 동영상 등은 Range(206) 지원
@@ -12,6 +14,7 @@ HTTP (계약: web/src/lib/twin-types.ts, twin-api.ts)
   GET  /api/state        TwinState JSON 한 번
   GET  /api/camera.jpg   최근 카메라 사진 (JPEG q80, 프레임마다 한 번만 만든다). 없으면 204
   POST /api/control      {cmd: pause|resume|toggle}
+  POST /api/mode         {mode: load|drive} -> {ok, mode, sent}. 적용은 다음 프레임의 TwinState.mode 로 확인
   GET|POST /api/volume   {action: up|down|mute|unmute|toggle|set, value 0..1.5} -> {level, muted} (wpctl)
   POST /api/exit         키오스크 크로미움을 닫는다 (먼저 200 응답)
   POST /api/stats        화면 쪽 진단 값을 로그에 한 줄
@@ -35,6 +38,7 @@ LOG_DIR = os.path.join(ROOT, 'logs')
 RUN_DIR = os.path.join(ROOT, 'run')
 KIOSK_PROFILE = os.path.join(HOME, '.cache', 'cargo-twin-kiosk')    # launch.sh 의 --user-data-dir 와 같아야 한다
 CTRL_PORT = 5011
+MODE_PORT = 5023                                                     # 센서 파이 sensor_feed.py 적재 · 주행 모드
 sys.path.insert(0, VIEW_DIR)
 
 import numpy as np                                                    # noqa: E402
@@ -466,12 +470,12 @@ class Twin:
         threading.Thread(target=self.loop, daemon=True, name='twin').start()
 
     # 보내는 쪽(TCP 상대)의 UDP 5011 로 제어 신호
-    def send(self, msg):
+    def send(self, msg, port=CTRL_PORT):
         peer = getattr(self.rx, 'peer', None)
         if not peer:
             return False
         try:
-            self.ctrl.sendto(msg.encode(), (peer, CTRL_PORT))
+            self.ctrl.sendto(msg.encode(), (peer, port))
             return True
         except OSError as e:
             log.warning('control send %s: %s', msg, e)
@@ -493,6 +497,14 @@ class Twin:
         sent = self.send(cmd)
         log.info('control %s (sent %s) paused=%s', cmd, sent, paused)
         return dict(ok=True, paused=paused, sent=sent)
+
+    def set_mode(self, mode):
+        """적재 · 주행 단추 -> 센서 파이 UDP 5023. 바뀐 모드는 다음 프레임 sensors.mode 로 돌아온다."""
+        if mode not in ('load', 'drive'):
+            raise ValueError('알 수 없는 mode: %r' % mode)
+        sent = self.send('mode ' + mode, MODE_PORT)
+        log.info('mode %s (sent %s)', mode, sent)
+        return dict(ok=sent, mode=mode, sent=sent)
 
     def loop(self):
         while True:
@@ -550,7 +562,14 @@ class Twin:
             now = time.time()
             self.alerts.active = {c['key']: (c['name'] + (' · ' + c['reason'] if c['reason'] else ''), now + 1.0, c['level'] >= 2)
                                   for c in rk['checks'] if c['level']}
-        self.voice.update(self.alerts.active)
+        # 적재 모드는 소리만 끈다 (울리던 경보도 바로 끊는다). 주행으로 바꾸는 순간 이미 떠 있는 경고 · 주의는 새로 뜬 것으로 울린다
+        mode = (hdr.get('sensors') or {}).get('mode')
+        if mode == 'load':
+            self.voice.update({})
+            if getattr(self.voice, 'ok', False) and self.voice.ch.get_busy():
+                self.voice.ch.stop()
+        else:
+            self.voice.update(self.alerts.active)
         ready = info.get('state') == 'ready'
         g = hdr.get('grid')
         grid = None
@@ -559,7 +578,7 @@ class Twin:
                         y0=num(g['y0'], 4), y1=num(g['y0'] + g['ny'] * g['cell'], 4))
         send_t = num(hdr.get('send_t'))
         snap = dict(
-            source='live',
+            source='live', mode=mode if mode in ('load', 'drive') else None,
             run=hdr.get('run'), scenario=(hdr.get('scenario') or '').replace('_', ' ') or None,
             t_run=num(hdr.get('t_run'), 3), dur_run=num(hdr.get('dur_run'), 3),
             grid=grid, base=num(self.base, 4) or 0.0,
@@ -586,7 +605,7 @@ class Twin:
         alerts = [dict(kind=k, text=v[0], severe=bool(v[2])) for k, v in active.items() if paused or v[1] >= now]
         alerts.sort(key=lambda a: (not a['severe'], a['kind']))
         st = dict(t=round(now, 3), connected=snap is not None, paused=paused,
-                  source=snap['source'] if snap else 'none',
+                  source=snap['source'] if snap else 'none', mode=None,
                   run=None, scenario=None, t_run=None, dur_run=None, grid=None,
                   base=num(self.base, 4) or 0.0, boxes=[], sensors=sensors_json(None, None), risk=None,
                   twin=dict(EMPTY_TWIN), alerts=alerts if snap else [],
@@ -594,7 +613,7 @@ class Twin:
                             latency_ms=snap['latency_ms'] if snap else None, frames=int(self.rx.ok)),
                   camera_seq=seq, volume=volume, reg=self.reg.json())
         if snap:
-            for k in ('run', 'scenario', 't_run', 'dur_run', 'grid', 'base', 'boxes', 'sensors', 'risk', 'twin', 'reg'):
+            for k in ('mode', 'run', 'scenario', 't_run', 'dur_run', 'grid', 'base', 'boxes', 'sensors', 'risk', 'twin', 'reg'):
                 st[k] = snap[k]
         return st
 
@@ -829,6 +848,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == '/api/control':
                 return self.send_json(a.twin.control(str(body.get('cmd', ''))))
+            if path == '/api/mode':
+                return self.send_json(a.twin.set_mode(str(body.get('mode', ''))))
             if path == '/api/volume':
                 return self.send_json(a.volume.act(str(body.get('action', '')), body.get('value')))
         except ValueError as e:
