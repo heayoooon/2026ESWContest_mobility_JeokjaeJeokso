@@ -29,11 +29,13 @@ EN 12195-1 과 IRU 가이드는 조임 장력을 LC 의 50% 까지로 둔다.
 
 위험도 4단계. 낮은 쪽(풀림)과 높은 쪽(과조임)을 따로 보고 나쁜 쪽을 낸다.
             장력 / 하한             장력 / 상한
-    정상    >= 100%                 <= 50%
-    주의    <  100%  EN 하한 미달    >  50%   과조임 (조임은 LC 의 50% 까지)
-    경고    <   75%                  >  75%
-    위험    <   50%  풀림            > 100%   상한 넘음 (벨트 · 셀 한계)
-100% · 50% 는 근거가 있는 값이고, 75% 는 그 사이 가운데다 (total.py 의 125% 와 같은 방식).
+    정상    >= 105%                 <= 50%
+    주의    <  105%  하한 여유 5% 안  >  50%   과조임 (조임은 LC 의 50% 까지)
+    경고    <   95%  EN 하한 미달    >  75%
+    위험    <   90%  풀림            >  90%   상한 가까움 (벨트 · 셀 한계 10% 앞)
+하한 쪽은 EN 하한(100%) 앞뒤 5% 로 나눠, 하한에 닿기 전에 주의를 띄우고 하한을 10% 넘게 밑돌면 위험이다.
+상한 쪽 50% 는 근거가 있는 값이고(조임은 LC 의 50% 까지), 위험은 상한에 닿기 전 90% 에서 띄운다.
+2026-10-31 발표 자료 기준으로 맞췄다. 그 전에는 하한 100 · 75 · 50%, 상한 50 · 75 · 100% 였다.
 판정 근거 정리: analysis/tension_EN12195-1.md
 
 가감속 중에는 하중 이동으로 무게중심이 출렁이므로 화물 무게와 무게중심은 길게(SIDE_SMOOTH_S) 평활한다.
@@ -47,12 +49,12 @@ from analysis.risk import CAUTION, DANGER, OK, WARNING, Check, Ema, static_g
 # --- 바꿔도 되는 기준값 ------------------------------------------------------
 SAFETY_FACTOR = 1.1     # EN 12195-1 안전계수 fs. 측방 · 후방 1.1, 전방 1.25 (TENSION_A 를 전방 0.8 로 두면 1.25)
 MIN_N_PER_KG = 1.0      # 하한의 최솟값(N/kg). IRU 가이드: 미끄럼 위험이 없어도 4t 당 STF 400daN (= 1kg 당 1N)
-LOW_CAUTION_PCT = 100   # 장력이 하한의 이 % 보다 낮으면 주의 (EN 하한 미달)
-LOW_WARNING_PCT = 75    # 이 % 보다 낮으면 경고
-LOW_DANGER_PCT = 50     # 이 % 보다 낮으면 위험 (풀림)
+LOW_CAUTION_PCT = 105   # 장력이 하한의 이 % 보다 낮으면 주의 (하한 여유 5% 안)
+LOW_WARNING_PCT = 95    # 이 % 보다 낮으면 경고 (EN 하한 미달)
+LOW_DANGER_PCT = 90     # 이 % 보다 낮으면 위험 (풀림)
 HIGH_CAUTION_PCT = 50   # 장력이 상한(TENSION_MAX)의 이 % 를 넘으면 주의 (과조임)
 HIGH_WARNING_PCT = 75   # 이 % 를 넘으면 경고
-HIGH_DANGER_PCT = 100   # 이 % 를 넘으면 위험 (상한 넘음)
+HIGH_DANGER_PCT = 90    # 이 % 를 넘으면 위험 (상한 가까움)
 SIDE_SMOOTH_S = 3.0     # 화물 무게 · 무게중심 평활 시정수(초). 가감속 때 하중 이동으로 출렁이는 걸 누른다
 TENSION_SMOOTH_S = 0.3  # 장력 평활 시정수(초)
 SIDE_MIN_KG = 0.2       # 맡은 무게가 이보다 가벼우면 화물 없음
@@ -192,7 +194,7 @@ class TensionCheck:
                     "풀림" if low == DANGER else "부족", belt_n, need_n, low_pct, low_limit, where)))
             if high != OK:
                 reasons.append((high, "%s %.1fN = 상한 %gN 의 %.0f%% (%d%% 넘음)" % (
-                    "상한 넘음" if high == DANGER else "과조임", belt_n, self.max_n, high_pct, high_limit)))
+                    "상한 넘음" if high_pct > 100 else "과조임", belt_n, self.max_n, high_pct, high_limit)))
             reasons.sort(key=lambda r: -r[0])
 
             if reasons:
