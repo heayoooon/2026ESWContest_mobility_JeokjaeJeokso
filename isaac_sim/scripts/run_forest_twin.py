@@ -1442,7 +1442,7 @@ class Twin:
         """Redraw the measured surface from the newest live frame (only when a new one has arrived)."""
         frame,count=self.live.latest()
         if not self.live.receiving():
-            if self.live_count>0 and not getattr(self,'live_cleared',False):
+            if self.live_count!=0 and not getattr(self,'live_cleared',False):
                 self.clear_cargo_view();self.live_cleared=True   # link lost: do not keep showing the last cargo
             frame=None
         if frame is not None and count!=self.live_count:
@@ -1785,7 +1785,8 @@ class Twin:
         live=self.live_on and self.mode==0
         row={'rec_time_s':round(rec_time,3),'clock':time.strftime('%H:%M:%S'),
              'mode':'live' if live else 'measured' if self.mode==0 else 'physics',
-             'run':case['id'],'replay_time_s':round(self.t,3),     # display_link needs a recording id for its camera frames'vehicle_kmh':round(self.velocity*3.6,2),
+             # run stays the recording id in live too: display_link takes its camera frames from that recording
+             'run':case['id'],'replay_time_s':round(self.t,3),'vehicle_kmh':round(self.velocity*3.6,2),
              'lap_s_m':round(float(self.s),2),'lane_d_m':round(float(self.d),3),'heading_deg':round(float(self.yaw),2),
              'road_slope_deg':self.value('grade'),'road_bank_deg':self.value('bank'),
              'cargo_mass_kg':self.value('mass'),'straps_connected':all(self.belts_hooked()),
