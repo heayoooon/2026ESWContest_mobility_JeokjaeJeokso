@@ -194,6 +194,7 @@ class MockEngine {
       paused: this.paused,
       source: this.signal ? 'replay' : 'none',
       mode: this.signal ? this.mode : null,
+      mode_by: this.signal ? 'sensor' : null,
       run: ph.run,
       scenario: ph.scenario,
       t_run: (inPhase / PHASE_S) * ph.dur,
@@ -230,12 +231,12 @@ class MockEngine {
   control(cmd: ControlCmd) {
     if (cmd === 'pause') this.paused = true
     else if (cmd === 'resume') this.paused = false
-    return Promise.resolve({ ok: true })
+    return Promise.resolve({ ok: true, sent: cmd === 'rebase', live: true })
   }
 
   setMode(mode: DriveMode) {
     this.mode = mode
-    return Promise.resolve({ ok: true, mode, sent: true })
+    return Promise.resolve({ ok: true, mode, sent: true, by: 'sensor' as const })
   }
 
   setVolume(action: VolumeAction, value?: number) {

@@ -27,8 +27,8 @@ export type TwinBox = {
   /** 0.5 s 넘게 지속된 형상 변화가 이 블록에 확정됨 (빨갛게 강조) */
   alert: boolean
   /** 'box' = 쌓인 상자 (앞면 깊이로 층을 나눔), 'side' = 상자 옆에 따로 놓인 짐 (뽁뽁이로 싼 물병 등),
-   *  'item' = 판이나 상자 위의 작은 물건. 옛 서버는 없음 */
-  kind?: 'box' | 'side' | 'item'
+   *  'item' = 판이나 상자 위의 작은 물건, 'bottle' = 눕혀 놓은 페트병 하나 (영상용 장면, 긴 쪽이 병 길이). 옛 서버는 없음 */
+  kind?: 'box' | 'side' | 'item' | 'bottle'
 }
 
 export type TwinAlert = {
@@ -114,8 +114,10 @@ export type TwinState = {
   paused: boolean
   /** 'replay' = 녹화 재생, 'live' = 실시간, 'none' = 신호 없음 */
   source: 'replay' | 'live' | 'none'
-  /** 센서 파이 적재 · 주행 모드 (sensors.mode). 신호가 없거나 옛 송신기면 null */
+  /** 적재 · 주행 모드. 신호가 없으면 null */
   mode?: DriveMode | null
+  /** 모드를 누가 들고 있나: 'sensor' = 센서 파이 판정기(sensors.mode), 'display' = 센서 파이가 모드를 모르는 옛 송신기라 화면 서버가 (소리만) */
+  mode_by?: 'sensor' | 'display' | null
   run: string | null
   /** 시나리오 이름 (예: 정속주행) */
   scenario: string | null
@@ -140,7 +142,8 @@ export type TwinState = {
   reg?: { cx: number; cy: number; n: number } | null
 }
 
-export type ControlCmd = 'pause' | 'resume'
+/** rebase = 기준 재설정 (센서 파이가 화물 이동 판정 기준을 지금 상태로 다시 잡는다. 실시간일 때만) */
+export type ControlCmd = 'pause' | 'resume' | 'rebase'
 /** 적재 = 벨트 k · 누름 자리 추정, 경보음 없음. 주행 = 추정값 확정 · 고정, 경보음. 화면은 둘이 같다.
  *  적재 -> 주행 때 센서 파이가 화물 이동 기준을 다시 잡는다 */
 export type DriveMode = 'load' | 'drive'

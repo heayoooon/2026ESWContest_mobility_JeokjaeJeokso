@@ -1,6 +1,7 @@
 """경보음 + 음성(Voice)과 새 HUD(카드형 패널, 경고/주의 표지판). twin_view.py 가 import 한다.
 
-Voice: 새로 뜬 경고에만 한 번. 경고 = '삐빅' x3 경보 + 음성(밑에 작은 경보 반복), 주의 = '띵-동' 차임 + 음성(밑에 부드러운 신호음).
+Voice: 새로 뜨거나 단계가 오른 알림에 한 번. 위험 = 빠른 '삐삐삐' x4 + '위험 위험', 경고 = '삐빅' x3 + '경고 경고',
+       주의 = '띵-동' 차임 + '주의 주의' (밑에 신호음 반복), 그 뒤에 이유 음성 (sounds/reason/*.mp3).
 Hud:   왼쪽 3D 위 상단 바 · 경고 표지판(새 경고 2.2 s 크게, 이후 작은 알림) · 테두리 점멸,
        오른쪽 카드 4장: 총하중(+추이), 적재함 평면도(모서리 하중 · 무게중심), 벨트 장력 게이지, 자세(수평계 · G 볼).
 """
@@ -47,33 +48,72 @@ def _place(buf, sig, at, sr):
 
 
 class Voice:
-    """새로 뜬 경고에만 소리. 같은 종류는 COOLDOWN 초 안에 다시 울리지 않는다. 경고는 재생 중인 주의를 끊고 나온다."""
-    COOLDOWN = {True: 4.0, False: 8.0}
+    """알림이 새로 뜨거나 단계가 오르면 한 번: 단계 소리('위험 위험' · '경고 경고' · '주의 주의') 뒤에 이유 음성
+    (sounds/reason/<이름>.mp3, 예 cog_left = '화물이 왼쪽으로 쏠렸습니다.'). 이유 음성이 없으면 단계 소리만.
+    같은 종류는 COOLDOWN 초 안에 같은 단계 이하로 다시 울리지 않는다 (깜빡임). 더 높은 단계가 뜨면 재생 중인 낮은 단계를 끊고,
+    한꺼번에 여러 개가 뜨면 높은 단계부터 하나씩 차례로 말한다."""
+    COOLDOWN = {3: 4.0, 2: 4.0, 1: 8.0}
+    LEAD = {1: 'caution.mp3', 2: 'warning.mp3', 3: 'danger.mp3'}
+    NAMES = {1: '주의', 2: '경고', 3: '위험'}
+    GAP = .12                                            # 단계 음성과 이유 음성 사이 (초)
 
     def __init__(self):
         self.ok = False
+        self.lead, self.reason, self.cache = {}, {}, {}
         try:
             if not pygame.mixer.get_init():
                 pygame.mixer.init()
-            sr, _, nch = pygame.mixer.get_init()
+            self.sr, _, self.nch = pygame.mixer.get_init()
             d = os.path.join(HERE, 'sounds')
-            self.snd = {True: self._compose(os.path.join(d, 'warning.mp3'), True, sr, nch),
-                        False: self._compose(os.path.join(d, 'caution.mp3'), False, sr, nch)}
+            self.lead = {lv: self._load(os.path.join(d, f)) for lv, f in self.LEAD.items() if os.path.exists(os.path.join(d, f))}
+            self.lead.setdefault(3, self.lead[2])        # danger.mp3 가 없으면 위험도 '경고 경고'
+            rd = os.path.join(d, 'reason')
+            if os.path.isdir(rd):
+                self.reason = {f[:-4]: self._load(os.path.join(rd, f), trim=True) for f in sorted(os.listdir(rd)) if f.endswith('.mp3')}
             self.ch = pygame.mixer.Channel(0)
             self.ok = True
         except Exception as e:
             print('sound off:', e, flush=True)
-        self.prev = set(); self.last = {}; self.playing = None; self.played = 0
+        self.prev = {}; self.pending = set(); self.last = {}
+        self.playing = None; self.sound_id = None; self.played = 0
 
-    @staticmethod
-    def _compose(path, severe, sr, nch):
+    def _load(self, path, trim=False):
+        """mp3 -> 모노 float (최대 .72). trim 이면 앞뒤 무음을 잘라 단계 음성 바로 뒤에 붙게 한다."""
         v = pygame.sndarray.array(pygame.mixer.Sound(path)).astype(np.float32)
         v = (v.mean(1) if v.ndim == 2 else v) / 32768.0
         v *= .72 / (np.abs(v).max() + 1e-9)
+        if trim:
+            on = np.flatnonzero(np.abs(v) > .02)
+            if len(on):
+                v = v[max(0, on[0] - int(.03 * self.sr)): on[-1] + int(.12 * self.sr)]
+        return v
+
+    def sound(self, level, clip=None):
+        """단계(1 주의 · 2 경고 · 3 위험) + 이유 음성 이름 -> pygame Sound. 처음 한 번 만들고 둔다."""
+        key = (level, clip if clip in self.reason else None)
+        if key not in self.cache:
+            self.cache[key] = self._compose(*key)
+        return self.cache[key]
+
+    def _compose(self, level, clip):
+        sr = self.sr
+        v = self.lead[level]
         vd = len(v) / sr
-        if severe:                                       # 경고: 삐빅 x3 -> 음성 + 밑에 작은 삐빅 반복
+        r = self.reason.get(clip)
+        rd = 0.0 if r is None else self.GAP + len(r) / sr
+        if level == 3:                                   # 위험: 높고 빠른 '삐삐삐' x4 -> 음성 + 밑에 빠른 삐삐 반복
+            lead = 1.05
+            buf = np.zeros(int((lead + vd + rd + .3) * sr), np.float32)
+            hi, lo = _tone([1800], .07, sr, .6), _tone([1350], .07, sr, .6)
+            for k in range(4):
+                for j, s in enumerate((hi, lo, hi)):
+                    _place(buf, s, k * .26 + j * .075, sr)
+            t = lead
+            while t < lead + vd:
+                _place(buf, hi * .30, t, sr); _place(buf, lo * .30, t + .09, sr); t += .3
+        elif level == 2:                                 # 경고: 삐빅 x3 -> 음성 + 밑에 작은 삐빅 반복
             lead = .95
-            buf = np.zeros(int((lead + vd + .3) * sr), np.float32)
+            buf = np.zeros(int((lead + vd + rd + .3) * sr), np.float32)
             hi, lo = _tone([1450], .085, sr, .55), _tone([1050], .085, sr, .55)
             for k in range(3):
                 _place(buf, hi, k * .30, sr); _place(buf, lo, k * .30 + .11, sr)
@@ -82,34 +122,45 @@ class Voice:
                 _place(buf, hi * .30, t, sr); _place(buf, lo * .30, t + .11, sr); t += .5
         else:                                            # 주의: 띵-동 차임 -> 음성 + 밑에 부드러운 '뚜'
             lead = .80
-            buf = np.zeros(int((lead + vd + .3) * sr), np.float32)
+            buf = np.zeros(int((lead + vd + rd + .3) * sr), np.float32)
             _place(buf, _tone([880], .55, sr, .55, harm=False, decay=.22), 0, sr)
             _place(buf, _tone([660], .60, sr, .55, harm=False, decay=.26), .30, sr)
             t = lead
             while t < lead + vd:
                 _place(buf, _tone([600], .14, sr, .16, harm=False), t, sr); t += .7
         _place(buf, v, lead, sr)
+        if r is not None:                                # 이유는 신호음 없이 또렷하게
+            _place(buf, r, lead + vd + self.GAP, sr)
         arr = (np.clip(buf, -1, 1) * 32000).astype(np.int16)
-        if nch > 1:
-            arr = np.repeat(arr[:, None], nch, 1)
+        if self.nch > 1:
+            arr = np.repeat(arr[:, None], self.nch, 1)
         return pygame.sndarray.make_sound(np.ascontiguousarray(arr))
 
     def update(self, active):
-        """active = Alerts.active {종류: (문구, 끝 시각, 심각)}"""
+        """active = Alerts.active {종류: (문구, 끝 시각, 심각[, 단계, 이유 음성 이름])}. 단계가 없으면 심각 = 경고, 아니면 주의."""
         now = time.time()
-        new = [(k, v[2]) for k, v in active.items() if k not in self.prev]
-        self.prev = set(active)
-        if not self.ok or not new:
+        cur = {k: ((v[3] if len(v) > 3 and v[3] else 2 if v[2] else 1), v[4] if len(v) > 4 else None)
+               for k, v in active.items()}
+        self.pending = {k for k in self.pending if k in cur} | {k for k, (lv, _) in cur.items() if lv > self.prev.get(k, 0)}
+        self.prev = {k: lv for k, (lv, _) in cur.items()}
+        if not self.ok:
+            self.pending.clear()
             return
-        severe = any(sv for _, sv in new)
-        if self.ch.get_busy() and not (severe and self.playing is False):
+        while self.pending:
+            kind = max(self.pending, key=lambda k: cur[k][0])
+            lv, clip = cur[kind]
+            if self.ch.get_busy() and lv <= (self.playing or 0):
+                return                                   # 지금 소리가 끝나면 다음 프레임에 이어서
+            self.pending.discard(kind)
+            t, last_lv = self.last.get(kind, (-1e9, 0))
+            if now - t < self.COOLDOWN[lv] and lv <= last_lv:
+                continue
+            clip = clip if clip in self.reason else None
+            self.ch.play(self.sound(lv, clip)); self.playing = lv
+            self.sound_id = '%d_%s' % (lv, clip) if clip else str(lv)
+            self.last[kind] = (now, lv); self.played += 1
+            print('voice', self.NAMES[lv], kind, clip or '-', flush=True)
             return
-        kind = max(new, key=lambda x: x[1])[0]
-        if now - self.last.get(kind, -1e9) < self.COOLDOWN[severe]:
-            return
-        self.ch.play(self.snd[severe]); self.playing = severe
-        self.last[kind] = now; self.played += 1
-        print('voice', '경고' if severe else '주의', kind, flush=True)
 
 
 # ---------------------------------------------------------------- 그리기 도우미

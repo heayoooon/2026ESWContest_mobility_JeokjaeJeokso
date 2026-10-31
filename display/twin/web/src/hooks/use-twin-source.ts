@@ -8,7 +8,9 @@ const flag = (name: string) => ['1', 'true', 'yes', 'on'].includes((params.get(n
 
 /** 모의 데이터는 개발 서버(npm run dev)에서만. 키오스크용 빌드는 센서 파이 실시간 입력만 쓴다 */
 export const IS_MOCK = import.meta.env.DEV && flag('mock')
-export const SKIP_INTRO = flag('skipIntro')
+/** 보기 전용 (다른 사람들이 인터넷으로 보는 주소, 서버 보기 전용 포트가 meta 를 넣는다): 키오스크를 바꾸는 단추를 숨기고 인트로 없이 바로 */
+export const VIEWER = flag('viewer') || !!document.querySelector('meta[name="scss-viewer"]')
+export const SKIP_INTRO = flag('skipIntro') || VIEWER
 
 export type TwinApi = {
   sendControl: typeof sendControl

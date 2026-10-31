@@ -7,6 +7,7 @@
   일시정지: 화면만 멈춘다 (받은 프레임을 버린다). 보내는 쪽 UDP 5011 로 'pause' / 'resume' 도 보낸다 (듣고 있으면).
   적재 · 주행 모드: 보내는 쪽 UDP 5023 으로 'mode load' / 'mode drive' (센서 파이 sensor_feed.py 가 판정기에 반영).
         지금 모드는 sensors 의 mode 로 돌아온다. 화면은 두 모드가 같고, 적재 모드에서는 경고음 · 주의음만 안 낸다.
+        sensors 에 mode 가 없는 옛 송신기 · 녹화 재생이면 이 서버가 모드를 들고 소리만 바꾼다 (처음은 주행 = 소리 냄).
 
 HTTP (계약: web/src/lib/twin-types.ts, twin-api.ts)
   GET  /                 ../www (빌드된 화면, SPA, 없는 경로는 index.html). 동영상 등은 Range(206) 지원
@@ -14,7 +15,7 @@ HTTP (계약: web/src/lib/twin-types.ts, twin-api.ts)
   GET  /api/state        TwinState JSON 한 번
   GET  /api/camera.jpg   최근 카메라 사진 (JPEG q80, 프레임마다 한 번만 만든다). 없으면 204
   POST /api/control      {cmd: pause|resume|toggle}
-  POST /api/mode         {mode: load|drive} -> {ok, mode, sent}. 적용은 다음 프레임의 TwinState.mode 로 확인
+  POST /api/mode         {mode: load|drive} -> {ok, mode, sent, by}. 적용은 다음 프레임의 TwinState.mode 로 확인
   GET|POST /api/volume   {action: up|down|mute|unmute|toggle|set, value 0..1.5} -> {level, muted} (wpctl)
   POST /api/exit         키오스크 크로미움을 닫는다 (먼저 200 응답)
   POST /api/stats        화면 쪽 진단 값을 로그에 한 줄
@@ -22,7 +23,7 @@ HTTP (계약: web/src/lib/twin-types.ts, twin-api.ts)
 usage: python3 twin_server.py [--http 8090] [--tcp 5010]
 로그: ../logs/server.log
 """
-import argparse, collections, email.utils, io, json, logging, logging.handlers, math, os, re, signal, socket, \
+import argparse, collections, email.utils, functools, io, json, logging, logging.handlers, math, os, re, signal, socket, \
     struct, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlsplit
@@ -117,7 +118,7 @@ def box_json(b):
                 bottom=num(b['bottom'], 4), top=num(b['top'], 4),
                 color=[num(min(max(x, 0.0), 1.0), 3) for x in c],
                 held=bool(b.get('held', False)), alert=bool(scene_v3.is_alert(b.get('src', b))) if b.get('kind') != 'side' and ('src' in b or 'kind' not in b) else False,
-                kind=b.get('kind') if b.get('kind') in ('side', 'item') else 'box')
+                kind=b.get('kind') if b.get('kind') in ('side', 'item', 'bottle') else 'box')
 
 
 def sensors_json(s, age):
@@ -207,10 +208,105 @@ def risk_json(s):
     return dict(level=level4(s, s.get('risk')), overall=s.get('risk_overall'), text=s.get('risk_text') or '', checks=checks)
 
 
+COG_SIDE = (('앞쪽', 'front'), ('뒤쪽', 'back'), ('왼쪽', 'left'), ('오른쪽', 'right'))
+BELT_SIDE = {'c1': 'front', 'c2': 'back'}
+
+
+def reason_clip(key, reason):
+    """판정 key + 이유 문구(팀 analysis 의 Check.text) -> 이유 음성 이름 (server/sounds/reason/<이름>.mp3). 모르면 None.
+    무게중심은 '왼쪽 쏠림 …' 의 방향, 장력은 '부족' · '풀림' (약함) / '과조임' · '상한 넘음' (셈) 으로 고른다."""
+    reason = reason or ''
+    if key in ('load', 'move'):
+        return key
+    if key == 'cog':
+        return next(('cog_' + side for word, side in COG_SIDE if word in reason), None)
+    if key in BELT_SIDE:
+        if '부족' in reason or '풀림' in reason:
+            return 'belt_%s_low' % BELT_SIDE[key]
+        if '과조임' in reason or '상한' in reason:
+            return 'belt_%s_high' % BELT_SIDE[key]
+    return None
+
+
 EMPTY_TWIN = dict(state='building', built=0, changed_pct=0.0, pending_pct=0.0, shaking=False)
 
 
 # ---------------------------------------------------------------- 소리
+class VoiceFeed:
+    """디스플레이 스피커로 낸 음성 기록. 보기 전용 브라우저가 /api/voice 로 기다렸다가 같은 소리를 낸다."""
+
+    OLD_KIND = {'warning': '2', 'caution': '1'}     # 예전 화면이 부르던 이름
+
+    def __init__(self):
+        self.seq, self.kind, self.cv = 0, None, threading.Condition()
+        self.wav = {}
+
+    def push(self, kind):
+        """kind = Voice.sound_id ('<단계>' 또는 '<단계>_<이유 음성 이름>', 예 '3_belt_back_low')"""
+        with self.cv:
+            self.seq += 1
+            self.kind = kind
+            self.cv.notify_all()
+
+    def wait(self, after, timeout=20.0):
+        with self.cv:
+            if after >= 0:
+                self.cv.wait_for(lambda: self.seq > after, timeout)
+            return dict(seq=self.seq, kind=self.kind, severe=bool(self.kind) and self.kind[0] in '23')
+
+    @classmethod
+    def parse(cls, voice, kind):
+        """'<단계>[_<이유>]' -> (단계, 이유 음성 이름 | None). 모르는 이름이면 None."""
+        m = re.fullmatch(r'([123])(?:_([a-z_]+))?', cls.OLD_KIND.get(kind, kind or ''))
+        if not m or (m.group(2) and m.group(2) not in voice.reason):
+            return None
+        return int(m.group(1)), m.group(2)
+
+    def wav_bytes(self, voice, kind):
+        """Voice 가 만든 소리(신호음 + 단계 음성 + 이유 음성)를 그대로 WAV 로 (처음 한 번 만들고 둔다)"""
+        if kind not in self.wav:
+            import wave
+            arr = pygame.sndarray.array(voice.sound(*self.parse(voice, kind)))
+            sr, _, nch = pygame.mixer.get_init()
+            buf = io.BytesIO()
+            with wave.open(buf, 'wb') as w:
+                w.setnchannels(nch if arr.ndim == 2 else 1)
+                w.setsampwidth(2)
+                w.setframerate(sr)
+                w.writeframes(np.ascontiguousarray(arr.astype('<i2')).tobytes())
+            self.wav[kind] = buf.getvalue()
+        return self.wav[kind]
+
+
+VOICE = VoiceFeed()
+VOICE_JS = '''<script>
+/* 보기 전용 화면: 디스플레이 스피커가 위험/경고/주의 음성(+ 이유)을 낼 때 이 브라우저에서도 같은 소리 (화면을 한 번 누른 뒤부터) */
+(function () {
+  var seq = null, on = false, au = {};
+  function audio(k) {
+    if (!au[k]) { au[k] = new Audio('/api/voice.wav?kind=' + encodeURIComponent(k)); au[k].preload = 'auto'; }
+    return au[k];
+  }
+  function unlock() {
+    if (on) return; on = true;
+    ['1', '2', '3'].forEach(audio);
+  }
+  addEventListener('pointerdown', unlock, true); addEventListener('keydown', unlock, true);
+  function play(k) {
+    Object.keys(au).forEach(function (o) { if (o !== k) { au[o].pause(); } });
+    var a = audio(k); a.currentTime = 0; a.play().catch(function () {});
+  }
+  function loop() {
+    fetch('/api/voice?after=' + (seq === null ? -1 : seq), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (seq !== null && d.seq > seq && on && d.kind) play(d.kind); seq = d.seq; loop(); })
+      .catch(function () { setTimeout(loop, 3000); });
+  }
+  loop();
+})();
+</script>'''.encode()
+
+
 class Beep:
     """볼륨을 바꾼 뒤 새 크기로 짧고 부드러운 '띡'. 경보(채널 0)가 울리는 중이면 내지 않는다."""
 
@@ -467,6 +563,8 @@ class Twin:
         self.build_ms = collections.deque(maxlen=100)
         self.err_t = 0.0
         self.resume_t = 0.0            # 일시정지를 푼 시각 (오래 멈췄다 풀어도 바로 '연결 끊김'으로 보지 않게)
+        self.mode_local = 'drive'      # 센서 파이가 모드를 안 보낼 때(옛 송신기 · 녹화 재생) 이 서버가 드는 모드
+        self.mode_by = None            # 마지막 프레임의 모드를 누가 들었나: 'sensor' | 'display'
         threading.Thread(target=self.loop, daemon=True, name='twin').start()
 
     # 보내는 쪽(TCP 상대)의 UDP 5011 로 제어 신호
@@ -482,6 +580,17 @@ class Twin:
             return False
 
     def control(self, cmd):
+        if cmd == 'rebase':
+            # 기준 재설정: 화물 이동 판정의 기준을 지금 상태로 (센서 파이 live_twin -> sensor_feed). 화면 상태는 안 바뀐다.
+            # 센서 쪽도 1초 안의 중복은 무시하지만, 여러 번 눌러도 한 번만 보낸다
+            now = time.time()
+            if now - getattr(self, 'rebase_t', 0.0) < 1.0:
+                return dict(ok=True, sent=False, dup=True)
+            self.rebase_t = now
+            live = bool(self.snap and self.snap.get('source') == 'live')
+            sent = self.send('rebase') if live else False
+            log.info('control rebase (sent %s, live %s)', sent, live)
+            return dict(ok=True, sent=sent, live=live)
         with self.lock:
             if cmd == 'toggle':
                 cmd = 'resume' if self.paused else 'pause'
@@ -499,12 +608,14 @@ class Twin:
         return dict(ok=True, paused=paused, sent=sent)
 
     def set_mode(self, mode):
-        """적재 · 주행 단추 -> 센서 파이 UDP 5023. 바뀐 모드는 다음 프레임 sensors.mode 로 돌아온다."""
+        """적재 · 주행 단추 -> 센서 파이 UDP 5023. 바뀐 모드는 다음 프레임 sensors.mode 로 돌아온다.
+        센서 파이가 모드를 모르면(sensors 에 mode 없음) 이 서버의 모드만 바꾼다 (소리만 켜고 끈다)."""
         if mode not in ('load', 'drive'):
             raise ValueError('알 수 없는 mode: %r' % mode)
+        self.mode_local = mode
         sent = self.send('mode ' + mode, MODE_PORT)
-        log.info('mode %s (sent %s)', mode, sent)
-        return dict(ok=sent, mode=mode, sent=sent)
+        log.info('mode %s (sent %s, by %s)', mode, sent, self.mode_by)
+        return dict(ok=True, mode=mode, sent=sent, by=self.mode_by or 'display')
 
     def loop(self):
         while True:
@@ -550,6 +661,11 @@ class Twin:
                 self.err_t = time.time()
             self.boxes, floor = list(self.mesh.boxes or []), None
         self.base = floor if floor is not None else (self.mesh.base or 0.0)
+        sc = hdr.get('script') or {}
+        if sc.get('boxes') is not None:              # 영상용 장면(make_scene.py): 정해 준 반듯한 상자를 그대로 (깊이 추정 대신)
+            self.boxes = [dict(x) for x in sc['boxes']]
+            if sc.get('base') is not None:
+                self.base = float(sc['base'])
         try:
             self.reg.update(self.boxes, hdr.get('sensors'))
         except Exception:
@@ -558,18 +674,26 @@ class Twin:
         info = dict(self.mesh.twin.info)
         self.alerts.update(hdr, info)
         rk = risk_json(hdr.get('sensors'))
-        if rk is not None:          # 팀 파이프라인 판정(Hold 로 이미 걸러짐)을 그대로: 위험 = 경고, 주의 = 주의
+        if rk is not None:          # 팀 파이프라인 판정(Hold 로 이미 걸러짐)을 그대로. 소리는 단계(주의 · 경고 · 위험) + 이유 음성
             now = time.time()
-            self.alerts.active = {c['key']: (c['name'] + (' · ' + c['reason'] if c['reason'] else ''), now + 1.0, c['level'] >= 2)
+            self.alerts.active = {c['key']: (c['name'] + (' · ' + c['reason'] if c['reason'] else ''), now + 1.0, c['level'] >= 2,
+                                             c['level'], reason_clip(c['key'], c['reason']))
                                   for c in rk['checks'] if c['level']}
         # 적재 모드는 소리만 끈다 (울리던 경보도 바로 끊는다). 주행으로 바꾸는 순간 이미 떠 있는 경고 · 주의는 새로 뜬 것으로 울린다
         mode = (hdr.get('sensors') or {}).get('mode')
+        if mode in ('load', 'drive'):
+            self.mode_by = 'sensor'
+        else:
+            mode, self.mode_by = self.mode_local, 'display'
+        played = self.voice.played
         if mode == 'load':
             self.voice.update({})
             if getattr(self.voice, 'ok', False) and self.voice.ch.get_busy():
                 self.voice.ch.stop()
         else:
             self.voice.update(self.alerts.active)
+        if self.voice.played != played:
+            VOICE.push(self.voice.sound_id)
         ready = info.get('state') == 'ready'
         g = hdr.get('grid')
         grid = None
@@ -578,7 +702,8 @@ class Twin:
                         y0=num(g['y0'], 4), y1=num(g['y0'] + g['ny'] * g['cell'], 4))
         send_t = num(hdr.get('send_t'))
         snap = dict(
-            source='live', mode=mode if mode in ('load', 'drive') else None,
+            source='replay' if 'replay' in (hdr.get('src') or ()) else 'live',   # 녹화 재생기(replay_runs.py)는 src 에 replay
+            mode=mode, mode_by=self.mode_by,
             run=hdr.get('run'), scenario=(hdr.get('scenario') or '').replace('_', ' ') or None,
             t_run=num(hdr.get('t_run'), 3), dur_run=num(hdr.get('dur_run'), 3),
             grid=grid, base=num(self.base, 4) or 0.0,
@@ -605,7 +730,7 @@ class Twin:
         alerts = [dict(kind=k, text=v[0], severe=bool(v[2])) for k, v in active.items() if paused or v[1] >= now]
         alerts.sort(key=lambda a: (not a['severe'], a['kind']))
         st = dict(t=round(now, 3), connected=snap is not None, paused=paused,
-                  source=snap['source'] if snap else 'none', mode=None,
+                  source=snap['source'] if snap else 'none', mode=None, mode_by=None,
                   run=None, scenario=None, t_run=None, dur_run=None, grid=None,
                   base=num(self.base, 4) or 0.0, boxes=[], sensors=sensors_json(None, None), risk=None,
                   twin=dict(EMPTY_TWIN), alerts=alerts if snap else [],
@@ -613,7 +738,7 @@ class Twin:
                             latency_ms=snap['latency_ms'] if snap else None, frames=int(self.rx.ok)),
                   camera_seq=seq, volume=volume, reg=self.reg.json())
         if snap:
-            for k in ('mode', 'run', 'scenario', 't_run', 'dur_run', 'grid', 'base', 'boxes', 'sensors', 'risk', 'twin', 'reg'):
+            for k in ('mode', 'mode_by', 'run', 'scenario', 't_run', 'dur_run', 'grid', 'base', 'boxes', 'sensors', 'risk', 'twin', 'reg'):
                 st[k] = snap[k]
         return st
 
@@ -728,7 +853,7 @@ MIME = {'.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
         '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
         '.wasm': 'application/wasm', '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json',
         '.hdr': 'application/octet-stream', '.bin': 'application/octet-stream'}
-QUIET = ('/api/camera.jpg', '/api/stream', '/api/state', '/api/volume')
+QUIET = ('/api/camera.jpg', '/api/stream', '/api/state', '/api/volume', '/api/voice')
 DISCONNECT = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, socket.timeout, TimeoutError)
 
 
@@ -789,6 +914,7 @@ class Handler(BaseHTTPRequestHandler):
         return obj
 
     def guard(fn):
+        @functools.wraps(fn)
         def wrap(self):
             try:
                 fn(self)
@@ -833,6 +959,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == '/api/volume':
             return self.send_json(a.volume.get())
+        if path == '/api/voice':
+            q = dict(p.split('=', 1) for p in urlsplit(self.path).query.split('&') if '=' in p)
+            try:
+                after = int(q.get('after', '-1'))
+            except ValueError:
+                after = -1
+            return self.send_json(VOICE.wait(after))
+        if path == '/api/voice.wav':
+            kind = dict(p.split('=', 1) for p in urlsplit(self.path).query.split('&') if '=' in p).get('kind')
+            if not getattr(a.twin.voice, 'ok', False) or VoiceFeed.parse(a.twin.voice, kind) is None:
+                return self.send_json(dict(ok=False, error='소리 없음'), 404)
+            body = VOICE.wav_bytes(a.twin.voice, kind)
+            self.send_response(200)
+            self.send_header('Content-Type', 'audio/wav')
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Cache-Control', 'max-age=3600')
+            self.cors()
+            self.end_headers()
+            if self.command != 'HEAD':
+                self.wfile.write(body)
+            return
         if path.startswith('/api/'):
             return self.send_json(dict(ok=False, error='없는 API'), 404)
         self.static(path)
@@ -972,6 +1119,50 @@ class Handler(BaseHTTPRequestHandler):
                 left -= len(chunk)
 
 
+VIEWER_META = b'<meta name="scss-viewer" content="1" />'
+VIEWER_MAX_SSE = 40              # 파이가 버틸 만큼만 (보기 한 명당 상태 약 10 Hz)
+
+
+class ViewerHandler(Handler):
+    """보기 전용 (다른 사람들이 인터넷 · LAN 으로 보는 주소). 화면 · 상태 · 카메라는 키오스크와 같고,
+    키오스크를 바꾸는 요청(일시정지 · 음량 · 끝내기)은 막는다. 화면은 index.html 의 meta 로 보기 전용인 줄 안다."""
+    server_version = 'CargoTwinViewer/1.0'
+
+    @Handler.guard
+    def do_POST(self):
+        path = urlsplit(self.path).path
+        # 본문은 쓰지 않아도 다 읽어 둔다 (안 읽으면 같은 연결의 다음 요청 앞에 붙어 501 로 깨진다)
+        n = int(self.headers.get('Content-Length') or 0)
+        if n > 1 << 20:
+            self.close_connection = True
+            return self.send_json(dict(ok=False, error='너무 큰 요청'), 413)
+        if n > 0:
+            self.rfile.read(n)
+        if path == '/api/stats':                         # 보는 사람 브라우저의 프레임 속도 보고: 받기만 한다
+            return self.send_json(dict(ok=True))
+        self.send_json(dict(ok=False, error='보기 전용 주소입니다'), 403)
+
+    @Handler.guard
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        if path == '/api/stream' and self.app.hub.clients >= VIEWER_MAX_SSE:
+            return self.send_json(dict(ok=False, error='보는 사람이 너무 많습니다. 잠시 뒤 다시 열어 주세요'), 503)
+        Handler.do_GET.__wrapped__(self)
+
+    def send_file(self, full, head):
+        if os.path.basename(full) != 'index.html':
+            return Handler.send_file(self, full, head)
+        with open(full, 'rb') as f:
+            body = f.read().replace(b'</head>', VIEWER_META + VOICE_JS + b'</head>', 1)
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        if not head:
+            self.wfile.write(body)
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -995,6 +1186,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--http', type=int, default=int(os.environ.get('TWIN_HTTP_PORT', 8090)))
     ap.add_argument('--tcp', type=int, default=5010)
+    ap.add_argument('--view', type=int, default=int(os.environ.get('TWIN_VIEW_PORT', 8091)),
+                    help='보기 전용 HTTP 포트 (0 이면 끔)')
     args = ap.parse_args()
     setup_log()
     os.makedirs(RUN_DIR, exist_ok=True)
@@ -1002,6 +1195,7 @@ def main():
         app = App(args.tcp)
         Handler.app = app
         srv = Server(('0.0.0.0', args.http), Handler)
+        view = Server(('0.0.0.0', args.view), ViewerHandler) if args.view else None
     except OSError as e:                                     # 포트를 다른 프로그램(옛 twin_app.py 등)이 쓰는 중
         log.error('시작 실패: %s (tcp %d / http %d 를 쓰는 프로그램을 먼저 끄세요)', e, args.tcp, args.http)
         sys.exit(1)
@@ -1018,6 +1212,9 @@ def main():
             time.sleep(30)
             log.info('%s  sse %d', app.twin.status(), app.hub.clients)
     threading.Thread(target=status, daemon=True, name='status').start()
+    if view:
+        threading.Thread(target=view.serve_forever, kwargs=dict(poll_interval=0.5), daemon=True, name='viewer').start()
+        log.info('보기 전용: http :%d (일시정지 · 음량 · 끝내기 막음)', args.view)
     try:
         srv.serve_forever(poll_interval=0.5)
     except (SystemExit, KeyboardInterrupt):
@@ -1027,6 +1224,8 @@ def main():
         if app.twin.paused:
             app.twin.send('resume')                          # 보내는 쪽을 멈춘 채로 두지 않는다
         srv.server_close()
+        if view:
+            view.server_close()
         log.info('twin_server stopped')
 
 

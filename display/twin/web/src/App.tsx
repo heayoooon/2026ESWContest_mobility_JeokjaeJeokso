@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import CargoIntro from '@/components/ui/cargo-intro'
 import TwinPage, { preloadTwin3D } from '@/components/ui/twin-page'
 import { SKIP_INTRO } from '@/hooks/use-twin-source'
+import DisplayFrame from '@/components/ui/viewer-frame'
 
 /**
  * 화면 흐름: 인트로 영상(저절로 재생) -> 끝날 즈음 트윈을 아래에 미리 띄움 -> 인트로가 점점 옅어지며 트윈이 드러남.
@@ -40,7 +41,12 @@ export default function App() {
       // 길게 누르면 뜨는 메뉴 막기 (터치 키오스크)
       onContextMenu={(e) => e.preventDefault()}
     >
-      {phase !== 'intro' && <TwinPage onExited={backToIntro} />}
+      {/* 트윈은 어느 화면에서든 키오스크(800 x 480)와 같은 비율로 (모니터에서는 통째로 키운다) */}
+      {phase !== 'intro' && (
+        <DisplayFrame>
+          <TwinPage onExited={backToIntro} />
+        </DisplayFrame>
+      )}
       {phase !== 'twin' && <CargoIntro leaving={phase === 'blend'} onPrepare={prepare} onEnter={enter} />}
     </div>
   )
