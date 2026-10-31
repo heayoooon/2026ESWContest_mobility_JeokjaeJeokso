@@ -2,7 +2,7 @@
  * 트윈 화면의 작은 조각들: 위쪽 판정 띠, 아래 다섯 칸, 모서리 버튼, 볼륨, 기울기, 종료 확인.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Crosshair, House, Link2, Minus, Move, Package, Pause, Play, Plus, RotateCcw, Rotate3d, Truck, Volume2, VolumeX } from 'lucide-react'
+import { Crosshair, Eye, House, LocateFixed, Link2, Minus, Move, Package, Pause, Play, Plus, RotateCcw, Rotate3d, Truck, Volume2, VolumeX } from 'lucide-react'
 import type { DriveMode, TwinState, VolumeAction } from '@/lib/twin-types'
 import { LEVEL_WORD, type CheckKey, type CheckView, type Level, type TwinView } from '@/lib/twin-view'
 
@@ -171,43 +171,72 @@ export function IconButton({ label, onClick, children, className = '', pressed }
 export function TopControls({
   presetLabel,
   paused,
-  driveMode,
   onPreset,
   onPause,
+  driveMode = null,
   onDriveMode,
+  onRebase,
+  rebasing = false,
+  rebaseOff = false,
   onRestart,
 }: {
   presetLabel: string
   paused: boolean
-  /** 지금 적재 · 주행 모드. 센서 신호가 없으면 null (단추를 못 누른다) */
-  driveMode: DriveMode | null
   onPreset: () => void
-  onPause: () => void
-  onDriveMode: () => void
+  /** 보기 전용 주소에서는 없다 (키오스크를 멈추지 못하게) */
+  onPause?: () => void
+  /** 지금 적재 · 주행 모드. 센서 신호가 없으면 null (단추를 못 누른다) */
+  driveMode?: DriveMode | null
+  /** 적재 <-> 주행 (키오스크에서만) */
+  onDriveMode?: () => void
+  /** 기준 재설정 (키오스크에서만). rebasing = 누른 뒤 약 1초 (센서 파이가 기준을 다시 잡는 동안) */
+  onRebase?: () => void
+  rebasing?: boolean
+  rebaseOff?: boolean
   /** 녹화 재생 때만 (실시간에는 없다) */
   onRestart?: () => void
 }) {
-  const driving = driveMode === 'drive'
   return (
     <div className="tw-topctl">
       <button type="button" className="tw-btn tw-view" onClick={onPreset} aria-label={`시점 바꾸기 (지금 ${presetLabel})`}>
-        <Rotate3d size={18} strokeWidth={1.9} />
-        <span>{presetLabel}</span>
+        <Rotate3d size={20} strokeWidth={1.9} />
+        <span>시점 {presetLabel}</span>
       </button>
-      <IconButton label={paused ? '재생' : '일시정지'} onClick={onPause} pressed={paused}>
-        {paused ? <Play size={18} strokeWidth={2} fill="currentColor" /> : <Pause size={18} strokeWidth={2} fill="currentColor" />}
-      </IconButton>
+      {onPause && (
+        <IconButton label={paused ? '재생' : '일시정지'} onClick={onPause} pressed={paused}>
+          {paused ? <Play size={20} strokeWidth={2} fill="currentColor" /> : <Pause size={20} strokeWidth={2} fill="currentColor" />}
+          <span>{paused ? '재생' : '멈춤'}</span>
+        </IconButton>
+      )}
       {/* 적재 · 주행: 지금 모드를 글자로. 누르면 다른 모드로 (적재 -> 주행 때 센서 파이가 기준을 다시 잡는다) */}
-      <button
-        type="button"
-        className="tw-btn tw-view"
-        onClick={onDriveMode}
-        disabled={!driveMode}
-        aria-label={driveMode ? `지금 ${driving ? '주행' : '적재'} 모드 (누르면 ${driving ? '적재' : '주행'} 모드로)` : '적재 · 주행 모드 (센서 신호 없음)'}
-      >
-        {driving ? <Truck size={18} strokeWidth={1.9} /> : <Package size={18} strokeWidth={1.9} />}
-        <span>{driveMode ? (driving ? '주행' : '적재') : '모드'}</span>
-      </button>
+      {onDriveMode && (
+        <button
+          type="button"
+          className={`tw-btn tw-drive${driveMode === 'drive' ? ' on' : ''}`}
+          onClick={onDriveMode}
+          disabled={!driveMode}
+          aria-label={
+            driveMode
+              ? `지금 ${driveMode === 'drive' ? '주행' : '적재'} 모드 (누르면 ${driveMode === 'drive' ? '적재' : '주행'} 모드로)`
+              : '적재 · 주행 모드 (센서 신호 없음)'
+          }
+        >
+          {driveMode === 'drive' ? <Truck size={20} strokeWidth={1.9} /> : <Package size={20} strokeWidth={1.9} />}
+          <span>{driveMode ? (driveMode === 'drive' ? '주행' : '적재') : '모드'}</span>
+        </button>
+      )}
+      {onRebase && (
+        <button
+          type="button"
+          className={`tw-btn tw-rebase${rebaseOff ? ' off' : ''}`}
+          aria-label="기준 재설정: 지금 상태를 정상 기준으로"
+          aria-pressed={rebasing}
+          onClick={onRebase}
+        >
+          <LocateFixed size={20} strokeWidth={1.9} />
+          <span>{rebasing ? '재설정 중' : '기준 재설정'}</span>
+        </button>
+      )}
       {onRestart && (
         <IconButton label="처음부터" onClick={onRestart}>
           <RotateCcw size={18} strokeWidth={2} />
@@ -217,10 +246,22 @@ export function TopControls({
   )
 }
 
+/** 보기 전용 주소 표시 (오른쪽 막대): 이 화면에서는 키오스크를 조작하지 않는다 */
+export function ViewerBadge() {
+  return (
+    <div className="tw-viewer" role="note">
+      <Eye size={20} strokeWidth={1.9} />
+      <b>보기 전용</b>
+      <span>센서 파이 화면을 그대로 봅니다</span>
+    </div>
+  )
+}
+
 export function HomeButton({ onPress }: { onPress: () => void }) {
   return (
     <IconButton label="홈 (끝내기)" onClick={onPress} className="tw-home">
-      <House size={19} strokeWidth={1.9} />
+      <House size={20} strokeWidth={1.9} />
+      <span>홈</span>
     </IconButton>
   )
 }
@@ -287,10 +328,11 @@ export function VolumePill({ volume, setVolume }: { volume: Vol | null | undefin
   return (
     <div className={`tw-vol${vol.muted ? ' muted' : ''}`} role="group" aria-label="소리 크기">
       <button type="button" className="tw-vbtn" aria-label={vol.muted ? '소리 켜기' : '소리 끄기'} aria-pressed={vol.muted} onClick={() => act('toggle')}>
-        {vol.muted ? <VolumeX size={18} strokeWidth={2} /> : <Volume2 size={18} strokeWidth={2} />}
+        {vol.muted ? <VolumeX size={20} strokeWidth={2} /> : <Volume2 size={20} strokeWidth={2} />}
+        <span>{vol.muted ? '소리 꺼짐' : `소리 ${pct}%`}</span>
       </button>
       <button type="button" className="tw-vbtn" aria-label="작게" onClick={() => act('down')}>
-        <Minus size={17} strokeWidth={2.2} />
+        <Minus size={20} strokeWidth={2.2} />
       </button>
       <div className="tw-vlevel" aria-live="polite">
         <em>음량</em>
@@ -302,7 +344,7 @@ export function VolumePill({ volume, setVolume }: { volume: Vol | null | undefin
         <span>{vol.muted ? '꺼짐' : `${pct}%`}</span>
       </div>
       <button type="button" className="tw-vbtn" aria-label="크게" onClick={() => act('up')}>
-        <Plus size={17} strokeWidth={2.2} />
+        <Plus size={20} strokeWidth={2.2} />
       </button>
     </div>
   )

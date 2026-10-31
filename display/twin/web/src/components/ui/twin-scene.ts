@@ -6,6 +6,7 @@
 //   카메라 블록 (월드 x 오른쪽, y 앞, z 위) -> X = x - CAM_CX, Z = -(y - CAM_CY), Y = 판 윗면 + (z - base)
 //   카메라와 판 · 로드셀 · 벨트의 위치 관계는 잰 적이 없다 (도식). CAM_CX/CY 는 화물이 판 가운데쯤 오게 고른 값.
 import * as THREE from 'three'
+import { currentFrame, renderPixelRatio } from '@/lib/display-frame'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js'
@@ -88,12 +89,12 @@ type BlockMesh = {
   extra: THREE.Group
   key: string
   thin: boolean
-  kind: 'box' | 'side' | 'item'
+  kind: 'box' | 'side' | 'item' | 'bottle'
   tint: THREE.Color
   /** 지금 화면에 보이는 모양 (목표를 향해 따라감) */
   cur: ShapeExtent | null
 }
-type ShapeExtent = { x0: number; x1: number; z0: number; z1: number; top: number; bottom: number; thin: boolean; kind: 'box' | 'side' | 'item'; color: [number, number, number]; alert: boolean }
+type ShapeExtent = { x0: number; x1: number; z0: number; z1: number; top: number; bottom: number; thin: boolean; kind: 'box' | 'side' | 'item' | 'bottle'; color: [number, number, number]; alert: boolean }
 type Strap = {
   key: 'c1' | 'c2'
   ribbon: THREE.Mesh
@@ -149,7 +150,8 @@ export function initTwinScene(host: HTMLElement, tagLayer: HTMLElement, opts: Sc
     opts.onError?.('WebGL 을 쓸 수 없습니다')
     throw e
   }
-  renderer.setPixelRatio(1) // 라즈베리파이: 픽셀 비율 1 고정
+  // 그리는 해상도: 키오스크(800 x 480)에서는 1. 모니터에서 화면을 키우면 그만큼 촘촘히 (lib/display-frame.ts)
+  renderer.setPixelRatio(renderPixelRatio())
   renderer.setClearColor(0x000000, 0)
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping
@@ -690,13 +692,38 @@ ${
       }
   }
 
+  /** 눕힌 페트병 하나: 몸통 · 어깨 · 목 · 뚜껑. 긴 쪽이 병 길이, 뚜껑은 + 쪽 (z 면 뒤, x 면 오른쪽) */
+  function buildBottle(b: BlockMesh, w: number, h: number, d: number) {
+    for (const o of [...b.extra.children]) b.extra.remove(o)
+    const along = d >= w ? 'z' : 'x'
+    const len = along === 'z' ? d : w
+    const r = +(Math.min(h, along === 'z' ? w : d) / 2).toFixed(3)
+    const L = +len.toFixed(3)
+    const parts: [THREE.BufferGeometry, THREE.Material, number][] = [
+      [cylG(r, +(L * 0.7).toFixed(3), 24), bottleMat, -L * 0.15],
+      [cylG(+(r * 0.4).toFixed(3), +(L * 0.13).toFixed(3), 24, r), bottleMat, L * 0.265],
+      [cylG(+(r * 0.36).toFixed(3), +(L * 0.07).toFixed(3), 16), bottleMat, L * 0.365],
+      [cylG(+(r * 0.42).toFixed(3), +(L * 0.06).toFixed(3), 16), capMat, L * 0.43],
+    ]
+    for (const [g, m, off] of parts) {
+      const o = mesh(g, m, b.extra, 0, 0, 0, true)
+      if (along === 'z') {
+        o.rotation.x = Math.PI / 2
+        o.position.set(0, 0, off)
+      } else {
+        o.rotation.z = -Math.PI / 2
+        o.position.set(off, 0, 0)
+      }
+    }
+  }
+
   /** 카메라 -> 판 위치 맞춤 (서버가 로드셀 무게중심으로 낸 값). 없으면 옛 고정값 */
   let reg = { cx: CAM_CX, cy: CAM_CY }
   /** 서버에서 온 목표 모양 (판 좌표). 화면은 이걸 향해 부드럽게 움직인다 */
   let targets: Extent[] = []
   const unitBox = track(new THREE.BoxGeometry(1, 1, 1))
   const unitEdges = track(new THREE.EdgesGeometry(unitBox))
-  const KIND_ORDER = { box: 0, side: 1, item: 2 } as const
+  const KIND_ORDER = { box: 0, side: 1, item: 2, bottle: 3 } as const
   const SHAPE_TAU = 0.22 // 초. 모양이 바뀌면 이 시정수로 따라간다 (튀지 않고, 실제 변화는 0.5 초 안에 거의 다 따라감)
 
   function setBlocks(boxes: TwinBox[], base: number) {
@@ -709,7 +736,7 @@ ${
       bottom: PLATE_TOP + Math.max(0, b.bottom - base),
       top: PLATE_TOP + Math.max(0.005, b.top - base),
       thin: (b.kind ?? 'box') === 'box' && b.top - b.bottom < 0.06,
-      kind: b.kind === 'side' || b.kind === 'item' ? b.kind : 'box',
+      kind: b.kind === 'side' || b.kind === 'item' || b.kind === 'bottle' ? b.kind : 'box',
       color: b.color,
       alert: b.alert,
     }))
@@ -754,6 +781,8 @@ ${
       if (b.kind !== e.kind || b.thin !== e.thin || !b.cur) {
         b.body.material = e.thin ? flapMat : e.kind === 'side' ? wrapMat : e.kind === 'item' ? b.itemMat : b.mats
         b.body.castShadow = e.kind !== 'side'
+        // 페트병은 상자 몸통 · 테두리 없이 병만 (extra)
+        b.body.visible = b.edges.visible = e.kind !== 'bottle'
         b.thin = e.thin
         b.kind = e.kind
         b.key = ''
@@ -762,7 +791,7 @@ ${
       if (!b.cur) b.cur = { ...e } // 새로 나타난 상자는 바로 그 자리
       b.cur.color = e.color
       b.cur.alert = e.alert
-      b.heat.visible = !e.thin
+      b.heat.visible = !e.thin && e.kind !== 'bottle'
       if (e.kind === 'item') {
         // 작은 물건: 카메라 색이 있으면 그 색, 없으면(회색 0.47) 흰 소포
         const grey = Math.abs(e.color[0] - e.color[1]) < 0.02 && Math.abs(e.color[1] - e.color[2]) < 0.02 && Math.abs(e.color[0] - 0.47) < 0.03
@@ -815,6 +844,12 @@ ${
           b.key = key
           buildBottles(b, w, h, dd)
         }
+      } else if (b.kind === 'bottle') {
+        const key = `${Math.round(w * 100)},${Math.round(h * 100)},${Math.round(dd * 100)}`
+        if (key !== b.key) {
+          b.key = key
+          buildBottle(b, w, h, dd)
+        }
       }
       shown.push(c)
     })
@@ -829,7 +864,14 @@ ${
         top: Math.max(...shown.map((e) => e.top)),
       }
     } else cargoBox = null
-    const R = THREE.MathUtils.clamp(Math.hypot(0.22, ((cargoBox ? cargoBox.top : PLATE_TOP + 0.2) - PLATE_TOP) / 2 + 0.03), 0.3, 0.46)
+    // 화면에 다 들어가야 할 범위 = 판(벨트 고리 포함) + 화물 + 다리. 카메라가 보는 점(판 위 ~ 화물 꼭대기 가운데)에서
+    // 가장 먼 모서리까지의 거리를 반지름으로 (위아래 띠 · 양쪽 막대에 가려지지 않게)
+    const top = cargoBox ? cargoBox.top : PLATE_TOP + 0.2
+    const hx = Math.max(L / 2 + MARGIN + 0.03, cargoBox ? Math.max(-cargoBox.x0, cargoBox.x1) : 0)
+    const hz = Math.max(W / 2 + MARGIN + 0.015, cargoBox ? Math.max(-cargoBox.z0, cargoBox.z1) : 0)
+    const cy = (PLATE_TOP + top) / 2 + 0.02
+    const hy = Math.max(top + 0.02 - cy, cy)
+    const R = THREE.MathUtils.clamp(Math.hypot(hx, hy, hz), 0.3, 0.9)
     placeGhosts()
     if (Math.abs(R - sceneR) > 0.015) {
       sceneR = R
@@ -1333,6 +1375,10 @@ ${
   function layout() {
     width = host.clientWidth || 800
     height = host.clientHeight || 480
+    // 화면을 통째로 키우면 손가락 · 마우스 이동도 그만큼 커지므로 돌리는 속도를 나눠 같은 느낌으로
+    const s = currentFrame().s
+    controls.rotateSpeed = 0.55 / Math.max(0.25, s)
+    renderer.setPixelRatio(renderPixelRatio())
     renderer.setSize(width, height, false)
     camera.aspect = width / height
     // 3D 영역(stage) 가운데에 오도록 화면을 비켜 그린다
@@ -1343,9 +1389,13 @@ ${
     // 반지름 R 짜리 장면이 stage 에 들어가는 거리 (쌓은 높이에 따라)
     const R = sceneR
     const vfov = THREE.MathUtils.degToRad(camera.fov)
-    const fitH = R / Math.tan(vfov / 2) / (stage.h / height)
-    const fitW = R / (Math.tan(vfov / 2) * camera.aspect) / (stage.w / width)
-    baseDist = Math.max(fitH, fitW) * 1.02
+    // 공(반지름 R)이 stage 칸 안에 다 들어가는 거리: stage 가 보는 반각을 구해 R / sin(반각)
+    // (예전 R / tan 은 공이 화면 가장자리를 넘어 위아래 띠 밑으로 들어갔다)
+    const halfV = Math.atan(Math.tan(vfov / 2) * (stage.h / height))
+    const halfW = Math.atan(Math.tan(vfov / 2) * camera.aspect * (stage.w / width))
+    const fitH = R / Math.sin(halfV)
+    const fitW = R / Math.sin(halfW)
+    baseDist = Math.max(fitH, fitW) * 1.03
     controls.minDistance = baseDist * 0.45
     controls.maxDistance = baseDist * 1.8
     computeGoal()
@@ -1358,12 +1408,17 @@ ${
     animating = true
   }
   const local = (x: number, y: number, z: number) => bed.localToWorld(tmpB.set(x, y, z)).clone()
+  /** ?camdir=x,y,z : 기본 시점 방향을 고정 (영상 녹화용: 실제 영상과 같은 쪽에서 보게). 좌우 흔들림도 끈다 */
+  const camDir = (() => {
+    const v = new URLSearchParams(window.location.search).get('camdir')?.split(',').map(Number)
+    return v && v.length === 3 && v.every(Number.isFinite) ? new THREE.Vector3(v[0], v[1], v[2]) : null
+  })()
   function computeGoal() {
     bed.updateWorldMatrix(true, false)
     const cb = cargoBox
     const top = cb ? cb.top : PLATE_TOP + 0.1
     const centre = local(0, (PLATE_TOP + top) / 2 + 0.02, 0)
-    let dir = new THREE.Vector3(0.62, 0.56, 1)
+    let dir = camDir ? camDir.clone() : new THREE.Vector3(0.62, 0.56, 1)
     let dist = baseDist
     let target = centre
     if (focusKey) {
@@ -1711,7 +1766,7 @@ ${
     if (animating && !dragging) {
       computeGoal()
       // 가만히 두면 기본 시점에서 아주 천천히 좌우로 흔들린다
-      if (!focusKey && preset === 'main' && idle > 8000) {
+      if (!focusKey && preset === 'main' && idle > 8000 && !camDir) {
         const a = Math.sin(t * ((Math.PI * 2) / 28)) * 0.2
         goalPos.sub(goalTarget).applyAxisAngle(UP, a).add(goalTarget)
       }
@@ -1884,6 +1939,10 @@ ${
   const ro = new ResizeObserver(() => layout())
   ro.observe(host)
   cleanups.push(() => ro.disconnect())
+  // 창 크기만 바뀌고 가상 화면 크기는 그대로일 때(배율만 바뀜)도 해상도를 다시 맞춘다
+  const onWin = () => layout()
+  window.addEventListener('resize', onWin)
+  cleanups.push(() => window.removeEventListener('resize', onWin))
   const onLost = (e: Event) => e.preventDefault()
   renderer.domElement.addEventListener('webglcontextlost', onLost)
   cleanups.push(() => renderer.domElement.removeEventListener('webglcontextlost', onLost))

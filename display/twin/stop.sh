@@ -4,7 +4,7 @@ set -u
 PROFILE="$HOME/.cache/cargo-twin-kiosk"
 CHROME="^/usr/lib/chromium/chromium .*--user-data-dir=$PROFILE( |$)"
 PY='^python3( -u)? \S*(twin_server|stream_play)\.py'
-LAUNCH='^(\S*/)?bash \S*(twin_web|display/twin)/launch\.sh'
+LAUNCH='^(\S*/)?bash \S*(twin_web|display/twin|scss_twin)/launch\.sh'
 
 pkill -TERM -f "$LAUNCH" 2>/dev/null     # 실행기가 스스로 정리한다
 pkill -TERM -f "$CHROME" 2>/dev/null

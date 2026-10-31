@@ -52,11 +52,11 @@ async function post(path: string, body: unknown) {
   return r.json().catch(() => ({}))
 }
 
-/** 일시정지 · 재개 · 처음부터 (보내는 쪽 UDP 5011 까지 전달된다) */
-export const sendControl = (cmd: ControlCmd) => post('control', { cmd })
+/** 일시정지 · 재개 · 기준 재설정 (보내는 쪽 UDP 5011 까지 전달된다). sent = 센서 파이로 보냈나 */
+export const sendControl = (cmd: ControlCmd) => post('control', { cmd }) as Promise<{ ok?: boolean; sent?: boolean; live?: boolean; dup?: boolean }>
 
 /** 적재 · 주행 모드 (센서 파이 UDP 5023 까지 전달된다). 바뀐 모드는 다음 TwinState.mode 로 돌아온다 */
-export const sendMode = (mode: DriveMode) => post('mode', { mode })
+export const sendMode = (mode: DriveMode) => post('mode', { mode }) as Promise<{ ok?: boolean; mode?: DriveMode; sent?: boolean; by?: 'sensor' | 'display' }>
 
 /** 시스템 볼륨 (wpctl). value 는 action='set' 일 때 0..1.5 */
 export const setVolume = (action: VolumeAction, value?: number) =>

@@ -9,11 +9,12 @@ import {
   CogMap,
   ModeSwitch,
   TopControls,
+  ViewerBadge,
   VolumePill,
   Waiting,
 } from '@/components/ui/twin-controls'
 import { useFpsReport } from '@/hooks/use-fps-report'
-import { useTwinSource } from '@/hooks/use-twin-source'
+import { VIEWER, useTwinSource } from '@/hooks/use-twin-source'
 import type { DriveMode, TwinState } from '@/lib/twin-types'
 import { buildView, type CheckKey } from '@/lib/twin-view'
 import './twin-page.css'
@@ -33,14 +34,14 @@ const PRESETS: { id: Preset; label: string }[] = [
 ]
 const FOCUS_MS = 15000
 /** 막대 폭 + 틈 (px, twin-page.css .tw-rail 과 맞춘다). 왼쪽은 무게중심 지도가 들어가 조금 넓다 */
-const RAIL_L = 84
-const RAIL_R = 68
+const RAIL_L = 104
+const RAIL_R = 80
 type ViewMode = 'normal' | 'xray' | 'explode' | 'sensor'
 const VIEW_MODES: { id: ViewMode; label: string; icon: ReactNode }[] = [
-  { id: 'normal', label: '기본', icon: <Box size={17} strokeWidth={1.9} /> },
-  { id: 'xray', label: '투시', icon: <ScanEye size={17} strokeWidth={1.9} /> },
-  { id: 'explode', label: '분해', icon: <Layers size={17} strokeWidth={1.9} /> },
-  { id: 'sensor', label: '센서', icon: <Gauge size={17} strokeWidth={1.9} /> },
+  { id: 'normal', label: '기본', icon: <Box size={20} strokeWidth={1.9} /> },
+  { id: 'xray', label: '투시', icon: <ScanEye size={20} strokeWidth={1.9} /> },
+  { id: 'explode', label: '분해', icon: <Layers size={20} strokeWidth={1.9} /> },
+  { id: 'sensor', label: '센서', icon: <Gauge size={20} strokeWidth={1.9} /> },
 ]
 
 /**
@@ -48,7 +49,7 @@ const VIEW_MODES: { id: ViewMode; label: string; icon: ReactNode }[] = [
  *  위: 판정 띠 (정상 · 주의 · 위험 + 가장 중요한 이유)
  *  가운데: 3D 적재 판 · 화물 · 벨트 · 무게중심 (문제 있는 곳에 이름표)
  *  아래: 다섯 칸 (적재 · 무게중심 · 화물 이동 · 앞 벨트 · 뒤 벨트). 누르면 그곳을 가까이 보고 자세한 이유
- *  모서리: 홈 · 시점 · 일시정지 · 적재/주행 · 볼륨
+ *  모서리: 홈 · 시점 · 일시정지 · 처음부터 · 볼륨
  * onExited: 모의 모드에서 '끝내기' 를 누르면 (닫을 브라우저가 없으므로) 부른다.
  */
 export default function TwinPage({ onExited }: { onExited?: () => void }) {
@@ -80,8 +81,18 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
     api.sendControl(next ? 'pause' : 'resume').catch(() => {})
   }, [api])
 
-  // ── 적재 · 주행: 누르면 글자를 바로 바꾸고, 센서 파이가 보낸 모드(state.mode)가 따라오면 맞춘다 ──
-  //    화면은 두 모드가 같다. 적재 모드에서는 서버가 경고음 · 주의음만 내지 않는다
+  // ── 짧은 알림 (처음부터 · 시점) ──
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimer = useRef<number | undefined>(undefined)
+  const say = useCallback((t: string) => {
+    setToast(t)
+    window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast(null), 1600)
+  }, [])
+  useEffect(() => () => window.clearTimeout(toastTimer.current), [])
+
+  // ── 적재 · 주행: 누르면 글자를 바로 바꾸고, 서버가 보낸 모드(state.mode)가 따라오면 맞춘다.
+  //    화면은 두 모드가 같다. 적재 모드에서는 서버가 경고음 · 주의음만 내지 않는다 ──
   const [driveMode, setDriveMode] = useState<DriveMode | null>(null)
   const driveRef = useRef(driveMode)
   const driveHold = useRef(0)
@@ -99,18 +110,37 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
     driveRef.current = next
     driveHold.current = performance.now() + 1500
     setDriveMode(next)
-    api.sendMode(next).catch(() => {})
-  }, [api])
+    api
+      .sendMode(next)
+      .then((r) => {
+        const what = next === 'drive' ? '주행 모드: 경고음을 냅니다' : '적재 모드: 경고음을 끕니다'
+        say(r?.by === 'display' ? `${what} (센서 파이는 모드를 몰라 소리만)` : what)
+      })
+      .catch(() => say('모드를 바꾸지 못했습니다'))
+  }, [api, say])
 
-  // ── 짧은 알림 (처음부터 · 시점) ──
-  const [toast, setToast] = useState<string | null>(null)
-  const toastTimer = useRef<number | undefined>(undefined)
-  const say = useCallback((t: string) => {
-    setToast(t)
-    window.clearTimeout(toastTimer.current)
-    toastTimer.current = window.setTimeout(() => setToast(null), 1600)
-  }, [])
-  useEffect(() => () => window.clearTimeout(toastTimer.current), [])
+  // ── 기준 재설정: 화물을 올리거나 내린 뒤 남은 화물 이동 경보를 지우고 지금 상태를 정상 기준으로 (센서 파이 판정).
+  //    과적 · 무게중심 · 장력 판정은 그대로라, 지금 위반이면 계속 뜬다 ──
+  const [rebasing, setRebasing] = useState(false)
+  const rebaseTimer = useRef<number | undefined>(undefined)
+  const live = online && !!state?.connected && state.source === 'live'
+  const onRebase = useCallback(() => {
+    if (!live) {
+      say('기준 재설정은 센서 파이 실시간 연결 때만 됩니다')
+      return
+    }
+    setRebasing(true)
+    window.clearTimeout(rebaseTimer.current)
+    rebaseTimer.current = window.setTimeout(() => setRebasing(false), 1200)
+    api
+      .sendControl('rebase')
+      .then((r) => {
+        if (r?.dup) return
+        say(r?.sent ? '기준 재설정: 지금 상태를 정상 기준으로 잡습니다' : '센서 파이에 보내지 못했습니다')
+      })
+      .catch(() => say('센서 파이에 보내지 못했습니다'))
+  }, [api, live, say])
+  useEffect(() => () => window.clearTimeout(rebaseTimer.current), [])
 
   // ── 보기 모드 ──
   const [mode, setMode] = useState<ViewMode>('normal')
@@ -143,7 +173,8 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
     const el = stageRef.current
     if (!el) return
     const read = () => {
-      const r = el.getBoundingClientRect()
+      // 페이지 안 위치 (보기 전용 화면이 휴대폰에서 통째로 줄어 있어도 3D 좌표와 맞게: 화면 좌표가 아니라 배치 좌표)
+      const r = { left: el.offsetLeft, top: el.offsetTop, width: el.offsetWidth, height: el.offsetHeight }
       setStage((s) =>
         s.x === r.left && s.y === r.top && s.w === r.width && s.h === r.height ? s : { x: r.left, y: r.top, w: r.width, h: r.height }
       )
@@ -189,7 +220,7 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
   const presetLabel = PRESETS.find((p) => p.id === preset)!.label
 
   return (
-    <div className={`tw-page edge${level ?? 'n'}`}>
+    <div className={`tw-page edge${level ?? 'n'}${VIEWER ? ' viewer' : ''}`}>
       <div className="tw-bg" />
       <Suspense fallback={null}>
         <TwinScene3D state={sceneState} view={view} preset={preset} mode={mode} focus={focus} stage={sceneStage} />
@@ -200,7 +231,7 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
         <div className="tw-stage" ref={stageRef}>
           {/* 왼쪽 막대: 홈 · 보기 모드 · 색 뜻 · 기울기 (3D 를 가리지 않게 모서리에) */}
           <aside className="tw-rail left">
-            <HomeButton onPress={() => setAskExit(true)} />
+            {!VIEWER && <HomeButton onPress={() => setAskExit(true)} />}
             <ModeSwitch modes={VIEW_MODES} value={mode} onChange={onMode} />
             <CogMap
               state={sceneState}
@@ -210,17 +241,16 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
               dim={!view.connected}
             />
           </aside>
-          {/* 오른쪽 막대: 시점 · 일시정지 · 적재/주행 · 음량 */}
+          {/* 오른쪽 막대: 시점 · 일시정지 · 적재/주행 · 기준 재설정 · 음량 */}
           <aside className="tw-rail right">
-            <TopControls
-              presetLabel={presetLabel}
-              paused={paused}
+            <TopControls presetLabel={presetLabel} paused={paused} onPreset={onPreset} onPause={VIEWER ? undefined : onPause}
               driveMode={driveMode}
-              onPreset={onPreset}
-              onPause={onPause}
-              onDriveMode={onDriveMode}
+              onDriveMode={VIEWER ? undefined : onDriveMode}
+              onRebase={VIEWER ? undefined : onRebase}
+              rebasing={rebasing}
+              rebaseOff={!live}
             />
-            <VolumePill volume={state?.volume} setVolume={api.setVolume} />
+            {VIEWER ? <ViewerBadge /> : <VolumePill volume={state?.volume} setVolume={api.setVolume} />}
           </aside>
           {showDetail && focusCheck && <DetailCard c={focusCheck} judged={view.judged} loads={sceneState?.sensors.loads} onClose={() => setFocus(null)} />}
           {paused && view.connected && <div className="tw-paused">일시정지 중 · ▶ 를 누르면 이어서 재생</div>}
