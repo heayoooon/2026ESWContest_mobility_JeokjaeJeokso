@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ControlCmd, TwinState, VolumeAction } from './twin-types'
+import type { ControlCmd, DriveMode, TwinState, VolumeAction } from './twin-types'
 
 /** 백엔드 주소. 같은 서버에서 서빙되므로 상대 경로 */
 const API = '/api'
@@ -54,6 +54,9 @@ async function post(path: string, body: unknown) {
 
 /** 일시정지 · 재개 · 처음부터 (보내는 쪽 UDP 5011 까지 전달된다) */
 export const sendControl = (cmd: ControlCmd) => post('control', { cmd })
+
+/** 적재 · 주행 모드 (센서 파이 UDP 5023 까지 전달된다). 바뀐 모드는 다음 TwinState.mode 로 돌아온다 */
+export const sendMode = (mode: DriveMode) => post('mode', { mode })
 
 /** 시스템 볼륨 (wpctl). value 는 action='set' 일 때 0..1.5 */
 export const setVolume = (action: VolumeAction, value?: number) =>

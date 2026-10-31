@@ -1,4 +1,4 @@
-import { exitApp, reportStats, sendControl, setVolume, useTwinState } from '@/lib/twin-api'
+import { exitApp, reportStats, sendControl, sendMode, setVolume, useTwinState } from '@/lib/twin-api'
 import { mockApi, useMockTwinState } from '@/lib/twin-mock'
 import type { TwinState } from '@/lib/twin-types'
 
@@ -12,12 +12,13 @@ export const SKIP_INTRO = flag('skipIntro')
 
 export type TwinApi = {
   sendControl: typeof sendControl
+  sendMode: typeof sendMode
   setVolume: typeof setVolume
   exitApp: typeof exitApp
   reportStats: typeof reportStats
 }
 
-const realApi: TwinApi = { sendControl, setVolume, exitApp, reportStats }
+const realApi: TwinApi = { sendControl, sendMode, setVolume, exitApp, reportStats }
 
 export type TwinSource = { state: TwinState | null; online: boolean; api: TwinApi; mock: boolean }
 

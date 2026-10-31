@@ -114,6 +114,8 @@ export type TwinState = {
   paused: boolean
   /** 'replay' = 녹화 재생, 'live' = 실시간, 'none' = 신호 없음 */
   source: 'replay' | 'live' | 'none'
+  /** 센서 파이 적재 · 주행 모드 (sensors.mode). 신호가 없거나 옛 송신기면 null */
+  mode?: DriveMode | null
   run: string | null
   /** 시나리오 이름 (예: 정속주행) */
   scenario: string | null
@@ -139,4 +141,7 @@ export type TwinState = {
 }
 
 export type ControlCmd = 'pause' | 'resume'
+/** 적재 = 벨트 k · 누름 자리 추정, 경보음 없음. 주행 = 추정값 확정 · 고정, 경보음. 화면은 둘이 같다.
+ *  적재 -> 주행 때 센서 파이가 화물 이동 기준을 다시 잡는다 */
+export type DriveMode = 'load' | 'drive'
 export type VolumeAction = 'up' | 'down' | 'mute' | 'unmute' | 'toggle' | 'set'

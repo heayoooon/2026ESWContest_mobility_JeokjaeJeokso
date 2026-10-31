@@ -203,6 +203,7 @@
 }
 .tw-btn:active { transform: scale(0.94); background: rgba(255, 255, 255, 0.12); }
 .tw-btn[aria-pressed='true'] { color: var(--warn); }
+.tw-btn:disabled { opacity: 0.4; pointer-events: none; }
 .tw-home { position: absolute; left: 0; top: 4px; }
 .tw-topctl { position: absolute; right: 0; top: 4px; display: flex; gap: 6px; }
 .tw-view { padding: 0 12px 0 10px; font-size: 13px; font-weight: 800; }

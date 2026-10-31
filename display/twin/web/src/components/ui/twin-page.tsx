@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/twin-controls'
 import { useFpsReport } from '@/hooks/use-fps-report'
 import { useTwinSource } from '@/hooks/use-twin-source'
-import type { TwinState } from '@/lib/twin-types'
+import type { DriveMode, TwinState } from '@/lib/twin-types'
 import { buildView, type CheckKey } from '@/lib/twin-view'
 import './twin-page.css'
 
@@ -48,7 +48,7 @@ const VIEW_MODES: { id: ViewMode; label: string; icon: ReactNode }[] = [
  *  위: 판정 띠 (정상 · 주의 · 위험 + 가장 중요한 이유)
  *  가운데: 3D 적재 판 · 화물 · 벨트 · 무게중심 (문제 있는 곳에 이름표)
  *  아래: 다섯 칸 (적재 · 무게중심 · 화물 이동 · 앞 벨트 · 뒤 벨트). 누르면 그곳을 가까이 보고 자세한 이유
- *  모서리: 홈 · 시점 · 일시정지 · 처음부터 · 볼륨
+ *  모서리: 홈 · 시점 · 일시정지 · 적재/주행 · 볼륨
  * onExited: 모의 모드에서 '끝내기' 를 누르면 (닫을 브라우저가 없으므로) 부른다.
  */
 export default function TwinPage({ onExited }: { onExited?: () => void }) {
@@ -78,6 +78,28 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
     pauseHold.current = performance.now() + 1500
     setPaused(next)
     api.sendControl(next ? 'pause' : 'resume').catch(() => {})
+  }, [api])
+
+  // ── 적재 · 주행: 누르면 글자를 바로 바꾸고, 센서 파이가 보낸 모드(state.mode)가 따라오면 맞춘다 ──
+  //    화면은 두 모드가 같다. 적재 모드에서는 서버가 경고음 · 주의음만 내지 않는다
+  const [driveMode, setDriveMode] = useState<DriveMode | null>(null)
+  const driveRef = useRef(driveMode)
+  const driveHold = useRef(0)
+  useEffect(() => {
+    if (!state || performance.now() < driveHold.current) return
+    const m = connected ? state.mode ?? null : null
+    if (m !== driveRef.current) {
+      driveRef.current = m
+      setDriveMode(m)
+    }
+  }, [state, connected])
+  const onDriveMode = useCallback(() => {
+    if (!driveRef.current) return
+    const next: DriveMode = driveRef.current === 'load' ? 'drive' : 'load'
+    driveRef.current = next
+    driveHold.current = performance.now() + 1500
+    setDriveMode(next)
+    api.sendMode(next).catch(() => {})
   }, [api])
 
   // ── 짧은 알림 (처음부터 · 시점) ──
@@ -188,9 +210,16 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
               dim={!view.connected}
             />
           </aside>
-          {/* 오른쪽 막대: 시점 · 일시정지 · 처음부터 · 음량 */}
+          {/* 오른쪽 막대: 시점 · 일시정지 · 적재/주행 · 음량 */}
           <aside className="tw-rail right">
-            <TopControls presetLabel={presetLabel} paused={paused} onPreset={onPreset} onPause={onPause} />
+            <TopControls
+              presetLabel={presetLabel}
+              paused={paused}
+              driveMode={driveMode}
+              onPreset={onPreset}
+              onPause={onPause}
+              onDriveMode={onDriveMode}
+            />
             <VolumePill volume={state?.volume} setVolume={api.setVolume} />
           </aside>
           {showDetail && focusCheck && <DetailCard c={focusCheck} judged={view.judged} loads={sceneState?.sensors.loads} onClose={() => setFocus(null)} />}

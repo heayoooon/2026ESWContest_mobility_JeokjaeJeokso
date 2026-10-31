@@ -2,8 +2,8 @@
  * 트윈 화면의 작은 조각들: 위쪽 판정 띠, 아래 다섯 칸, 모서리 버튼, 볼륨, 기울기, 종료 확인.
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Crosshair, House, Link2, Minus, Move, Package, Pause, Play, Plus, RotateCcw, Rotate3d, Volume2, VolumeX } from 'lucide-react'
-import type { TwinState, VolumeAction } from '@/lib/twin-types'
+import { Crosshair, House, Link2, Minus, Move, Package, Pause, Play, Plus, RotateCcw, Rotate3d, Truck, Volume2, VolumeX } from 'lucide-react'
+import type { DriveMode, TwinState, VolumeAction } from '@/lib/twin-types'
 import { LEVEL_WORD, type CheckKey, type CheckView, type Level, type TwinView } from '@/lib/twin-view'
 
 const lvClass = (l: Level) => (l === null ? 'lvn' : `lv${l}`)
@@ -171,17 +171,23 @@ export function IconButton({ label, onClick, children, className = '', pressed }
 export function TopControls({
   presetLabel,
   paused,
+  driveMode,
   onPreset,
   onPause,
+  onDriveMode,
   onRestart,
 }: {
   presetLabel: string
   paused: boolean
+  /** 지금 적재 · 주행 모드. 센서 신호가 없으면 null (단추를 못 누른다) */
+  driveMode: DriveMode | null
   onPreset: () => void
   onPause: () => void
+  onDriveMode: () => void
   /** 녹화 재생 때만 (실시간에는 없다) */
   onRestart?: () => void
 }) {
+  const driving = driveMode === 'drive'
   return (
     <div className="tw-topctl">
       <button type="button" className="tw-btn tw-view" onClick={onPreset} aria-label={`시점 바꾸기 (지금 ${presetLabel})`}>
@@ -191,6 +197,17 @@ export function TopControls({
       <IconButton label={paused ? '재생' : '일시정지'} onClick={onPause} pressed={paused}>
         {paused ? <Play size={18} strokeWidth={2} fill="currentColor" /> : <Pause size={18} strokeWidth={2} fill="currentColor" />}
       </IconButton>
+      {/* 적재 · 주행: 지금 모드를 글자로. 누르면 다른 모드로 (적재 -> 주행 때 센서 파이가 기준을 다시 잡는다) */}
+      <button
+        type="button"
+        className="tw-btn tw-view"
+        onClick={onDriveMode}
+        disabled={!driveMode}
+        aria-label={driveMode ? `지금 ${driving ? '주행' : '적재'} 모드 (누르면 ${driving ? '적재' : '주행'} 모드로)` : '적재 · 주행 모드 (센서 신호 없음)'}
+      >
+        {driving ? <Truck size={18} strokeWidth={1.9} /> : <Package size={18} strokeWidth={1.9} />}
+        <span>{driveMode ? (driving ? '주행' : '적재') : '모드'}</span>
+      </button>
       {onRestart && (
         <IconButton label="처음부터" onClick={onRestart}>
           <RotateCcw size={18} strokeWidth={2} />
