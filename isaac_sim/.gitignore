@@ -1,0 +1,19 @@
+# large or generated files - see README.md "필요한 큰 파일"
+assets/nvidia/
+assets/*.usd
+assets/*.glb
+assets/textures/
+assets/surfaces/
+data/
+live_data.json
+team/
+team_display/
+recordings/
+exports/
+captures/
+*.log
+__pycache__/
+verification.json
+scenarios.json
+forest_data.json
+share_log.txt
