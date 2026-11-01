@@ -73,8 +73,8 @@ cd display/twin
 
 | 포트 | 내용 |
 |---|---|
-| 5011 | `pause` / `resume` (화면 멈춤), `rebase` (기준 재설정 단추, live_twin.py 가 sensor_feed 에 전달할 때만 동작) |
-| 5023 | `mode load` / `mode drive` (적재 · 주행 단추, sensor_feed.py). `POST /api/mode {mode}` 가 보낸다 |
+| 5011 | `pause` / `resume` (화면 멈춤, live_twin.py) |
+| 5023 | `mode load` / `mode drive` (적재 · 주행 단추), `rebase` (기준 재설정 단추, 실시간일 때만). 둘 다 sensor_feed.py 가 받는다. `POST /api/mode {mode}` · `POST /api/control {cmd: rebase}` 가 보낸다 |
 
 ## 화면
 

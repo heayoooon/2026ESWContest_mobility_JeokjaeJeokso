@@ -14,6 +14,8 @@ pipeline.py 와 HX711 을 같이 쓸 수 없다 -> 실시간 트윈을 돌리는
   start 이면 <폴더>/sensors.csv 에 그때부터 stop 까지의 행을 쓰고, stop 때 <폴더>/summary.json 을 남긴다.
 적재 · 주행 모드: UDP 5023 (LAN) 으로 'mode load' / 'mode drive' (디스플레이의 적재 · 주행 단추가 보낸다).
   다음 프레임부터 Analyzer.set_mode 로 바뀌고, 지금 모드는 sensors 의 mode 로 나간다. 켤 때는 적재.
+기준 재설정: 같은 UDP 5023 으로 'rebase' (디스플레이의 기준 재설정 단추). 다음 프레임에 Analyzer.rebase() 를 부른다.
+  화물 이동 기준 · 학습한 h · 붙잡던 알림을 지우고 직후 1초 판정을 보류한다. 모드(적재 · 주행)는 그대로.
 
 usage: python3 sensor_feed.py [--port 5020]   (보통 run_live.sh 가 acquisition/env.sh 를 읽고 띄운다)
 """
@@ -99,6 +101,10 @@ def mode_listener(port=MODE_PORT):
     while True:
         data, addr = c.recvfrom(4096)
         cmd, _, arg = data.decode(errors='ignore').strip().partition(' ')
+        if cmd == 'rebase':
+            MODE['rebase'] = True                       # 다음 프레임에 Analyzer.rebase()
+            c.sendto(json.dumps(dict(ok=True, rebase=True)).encode(), addr)
+            continue
         ok = cmd == 'mode' and arg in ('load', 'drive')
         if ok:
             MODE['want'] = arg
@@ -187,6 +193,12 @@ def main():
             if want and analyze.set_mode(want):
                 b = {k: 'k %.2f y %s (%d회)' % (v.k, r1(v.y), v.steps) for k, v in analyze.belt_fit.belts.items()}
                 print('모드 -> %s  벨트 %s' % ('주행 (벨트 확정 · 기준 재설정)' if want == 'drive' else '적재 (벨트 추정 켬)', b), flush=True)
+                if want == 'drive':
+                    MODE.pop('rebase', None)            # 주행으로 바뀌며 이미 rebase 했다: 같이 온 단추 요청은 겹치므로 버린다
+            if MODE.pop('rebase', None):
+                analyze.rebase()
+                f.flags.append('rebase')
+                print('기준 재설정 (%d번째)' % analyze.rebase_n, flush=True)
             res = analyze(f)
             s = row(f, res, cfg, analyze.mode)
             msg = json.dumps(s, ensure_ascii=False, separators=(',', ':')).encode()
