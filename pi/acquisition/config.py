@@ -61,6 +61,10 @@ HX711
   MOVE_ALPHA   그 구간에서 이 비율 이상이 그 단계여야 판정 (단발성 충격을 거른다)  기본 0.6
   MOVE_CONFIRM_S  이동이 이만큼(초) 이어지면 최소 경고 (그 전은 의심)  기본 1.5
   MOVE_DANGER_S   이동이 이만큼(초) 이어지고 잔차가 위험 수준이면 위험  기본 3.0
+  MOVE_LATCH  화물 이동 경고 이상이 확정되면 사람이 기준 재설정(또는 적재 -> 주행 전환)을 누를 때까지 그 경보를 붙잡을지.
+              1 이면 붙잡고(그동안의 최고 단계 유지, 화물이 판에서 사라져도 유지) 주행 모드에서는 이동한 화물의 새 자리를 기준으로 받아들이지도 않는다
+              (이동량은 원위치 대비로 이어지고 화물이 돌아오면 0 으로 돌아온다. 적재 모드는 싣고 내리는 중이라 예전대로 4초 뒤 받아들임).
+              0 이면 모드와 상관없이 예전처럼 새 자리를 4초 뒤 기준으로 받아들여 저절로 풀린다   기본 1
   COG_LAG     로드셀이 IMU 보다 늦는 시간(초)                  기본 0.2
   COG_H_LEARN  무게중심 높이 h 를 주행 중 가감속 데이터로 학습할지. 1 이면 학습, 0 이면 끄고 h 를 고정한다   기본 1
                0 이면 BED_L/BED_W 가 있어야 한다 (h 의 단위가 mm 라서).
@@ -189,6 +193,7 @@ class Config:
         self.move_alpha = _float("MOVE_ALPHA", 0.6)
         self.move_confirm_s = _float("MOVE_CONFIRM_S", 1.5)
         self.move_danger_s = _float("MOVE_DANGER_S", 3.0)
+        self.move_latch = _int("MOVE_LATCH", 1)
         self.cog_lag = _float("COG_LAG", 0.2)
         self.cog_h_learn = _int("COG_H_LEARN", 1)
         self.cog_h = H_START_MM if self.cog_h_learn else H_FIXED_MM     # 학습하면 시작값, 끄면 고정값
@@ -275,6 +280,8 @@ class Config:
         if not 0 < self.move_confirm_s < self.move_danger_s:
             raise SystemExit("0 < MOVE_CONFIRM_S < MOVE_DANGER_S (초): %g, %g"
                              % (self.move_confirm_s, self.move_danger_s))
+        if self.move_latch not in (0, 1):
+            raise SystemExit("MOVE_LATCH 는 0(저절로 풀림) 또는 1(기준 재설정까지 유지): %d" % self.move_latch)
         if self.cog_h_learn not in (0, 1):
             raise SystemExit("COG_H_LEARN 은 0(학습 끔, h 고정) 또는 1(학습): %d" % self.cog_h_learn)
         if not self.cog_h_learn and not self.bed_l:
@@ -387,6 +394,8 @@ class Config:
             lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h %s %s)" % (
                 self.move_confirm_s, self.move_danger_s, self.cog_lag, "시작" if self.cog_h_learn else "고정(학습 끔)",
                 "%gmm" % self.cog_h if self.bed_l else "없음 -> 데이터로만"))
+            lines.append("                  경고 이상은 %s" % ("기준 재설정까지 유지 (MOVE_LATCH=1)" if self.move_latch
+                                                         else "저절로 풀림 (MOVE_LATCH=0)"))
         sides = self.belt_sides()
         if sides:
             unit = "mm" if self.bed_w else "%"
