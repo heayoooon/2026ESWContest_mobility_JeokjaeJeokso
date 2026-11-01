@@ -7,6 +7,7 @@
                 (벨트 누름과 하중 이동을 뺀 무게중심으로 본다)
     화물 이동   주행 중 h 를 추정해 IMU 로 무게중심 변화를 예측, 실측과 비교  transfer.py
                 (허용이 가속에 따라 커지고, 최근 구간 비율과 지속 시간으로 4단계)
+                경고 이상으로 확정되면 사람이 기준 재설정을 누를 때까지 붙잡는다 (MOVE_LATCH=1, 아래 _latch_move)
     장력 N / S  N쪽 · S쪽 벨트마다 맡은 무게(벨트 위치로 나눈 몫)로 정한 하한의 % · 상한의 %    tension.py
 판정마다 Hold 로 깜빡임을 거른다(HOLD).
 무게중심(Result.cog)은 벨트 누름을 벨트 위치에서 뺀 화물 무게중심이다 (cog.py). 무게중심 · 화물 이동 · 장력 판정과
@@ -30,7 +31,7 @@ from dataclasses import dataclass
 from analysis.belt_fit import BeltFit
 from analysis.cog import CoG, belt_press, cog, total_load, zone
 from analysis.overall import overall
-from analysis.risk import Check, Hold
+from analysis.risk import WARNING, Check, Hold, name as level_name
 from analysis.tension import TensionCheck, check_name
 from analysis.total import TotalLoadCheck
 from analysis.transfer import Transfer, TransferCheck
@@ -39,6 +40,7 @@ from analysis.transfer import Transfer, TransferCheck
 #   화물 이동은 transfer.py 가 최근 구간 비율로 이미 단발성 값을 걸러서 on_s 를 0 으로 둔다
 HOLD = {"load": (2.0, 2.0), "cog": (0.3, 1.0), "move": (0.0, 8.0)}
 HOLD_TENSION = (0.5, 2.0)
+LATCH_DIR_MIN = 5.0     # 붙잡은 경보 문구에 방향을 적는 최소 이동량 (CoG 단위, mm). 이보다 작으면 원위치로 본다
 
 
 def check_list(cfg):
@@ -82,7 +84,16 @@ class Analyzer:
         self.last = {k: None for k, _ in self.checks}
         self.last_level = None                  # 지난 프레임 종합 위험도
         self.rebase_n = 0                       # 기준 재설정을 받은 횟수
-        self.mode = "load"                      # 적재 / 주행 (set_mode). 판정은 둘 다 같고 벨트 추정만 다르다
+        self.move_latch_on = bool(cfg.move_latch)
+        self.move_latch = None                  # 붙잡고 있는 화물 이동 최고 단계 (경고 이상). 기준 재설정이 지운다
+        self.mode = "load"                      # 적재 / 주행 (set_mode). 벨트 추정과 화물 이동 새 자리 받아들이기가 다르다
+        self._spot_switch()
+
+    def _spot_switch(self):
+        """주행 모드에서는 이동한 화물의 새 자리를 기준으로 받아들이지 않는다 (MOVE_LATCH=1). 적재 모드는 싣고 내리는 중이라 받아들인다.
+        MOVE_LATCH=0 이면 모드와 상관없이 예전처럼 받아들인다."""
+        if self.transfer:
+            self.transfer.accept_new_spot = self.mode == "load" or not self.move_latch_on
 
     def set_mode(self, mode):
         """적재("load") / 주행("drive"). 바뀌었으면 True.
@@ -98,6 +109,7 @@ class Analyzer:
         else:
             self.belt_fit.thaw()
         self.mode = mode
+        self._spot_switch()
         return True
 
     def rebase(self):
@@ -107,7 +119,35 @@ class Analyzer:
         if self.transfer:
             self.transfer.rebase()
             self.holds["move"] = Hold(*HOLD.get("move", HOLD_TENSION))     # 붙잡고 있던 화물 이동 알림을 지운다
+        self.move_latch = None                                              # 확정돼 붙잡던 경보도 지운다 (이게 해제 수단이다)
         self.rebase_n += 1
+
+    def _latch_move(self, move, c, tr):
+        """화물 이동이 경고 이상으로 확정되면 그 최고 단계를 붙잡는다. 판정이 정상 · 주의로 돌아오거나(화물이 원위치로 돌아옴),
+        무게중심이 없어져도(화물이 판에서 떨어짐) 사람이 기준 재설정을 누를 때까지 유지한다.
+        주의는 한 번의 흔들림일 수 있어 붙잡지 않는다. 종합 위험도에는 원래 화물 이동이 안 들어간다.
+        단계는 붙잡아도 이동량은 지금 값을 보여 준다: 디스플레이가 문구에서 방향과 mm 를 읽어 화면에 그리므로,
+        판정이 낮아진 동안의 문구를 '지금 잔차(실측 - 예측)'로 만든다. 주행 모드에서는 기준이 원위치에 남아 있어
+        이 잔차가 곧 원위치 대비 이동량이고, 화물이 돌아오면 0 에 가까워진다."""
+        lv = move.level
+        if lv is not None and lv >= WARNING:
+            self.move_latch = max(self.move_latch or 0, lv)
+        if self.move_latch is None or (lv is not None and lv >= self.move_latch):
+            return move
+        now = "지금 %s" % level_name(lv) if lv is not None else "지금 판정 불가"
+        tail = "[유지: 최고 %s, %s - 확인 후 기준 재설정으로 해제]" % (level_name(self.move_latch), now)
+        if c is None or tr is None:                                  # 화물이 판에서 사라졌거나 IMU 가 없다: 숫자는 없다
+            return Check(move.key, move.name, self.move_latch, "화물 이동 감지됨 %s" % tail)
+        rx, ry = c.x - tr.pred_x, c.y - tr.pred_y
+        mm = max(abs(rx), abs(ry))
+        if mm < LATCH_DIR_MIN:                                       # 원위치 근처에서는 방향을 말하지 않는다
+            where = ""
+        elif abs(rx) >= abs(ry):
+            where = ("오른쪽 " if rx > 0 else "왼쪽 ")
+        else:
+            where = ("뒤쪽 " if ry > 0 else "앞쪽 ")
+        return Check(move.key, move.name, self.move_latch,
+                     "가감속으로 설명 안 되는 이동 %s%.0f%s %s" % (where, mm, c.unit, tail))
 
     def __call__(self, frame):
         t = frame.t_s
@@ -123,6 +163,8 @@ class Analyzer:
         tr = None
         if self.corners:
             tr, move = self.transfer(t, c, imu)
+            if self.move_latch_on:
+                move = self._latch_move(move, c, tr)
             # 위치 판정은 하중 이동(h x a)을 뺀 무게중심으로 한다. 급제동 순간의 쏠림에 놀라지 않게
             still = CoG(tr.static_x, tr.static_y, c.unit) if tr and c else c
             checks.append(zone(still, self.bed, *self.zone))

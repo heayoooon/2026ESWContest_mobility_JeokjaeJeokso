@@ -28,6 +28,8 @@ COG_H_LEARN=0 이면 이 학습을 끄고 h 를 고정값(config 의 H_FIXED_MM)
     금방 꺼지지만 실제 이동은 계속된다. GRACE_S 안의 끊김은 이어서 센다.
 기준(X0, Y0)은 조용할 때(가감속 · 회전 없음) 천천히 따라가고, 화물이 새 자리에서 조용히 SETTLE_S 초
 머물면 그 자리를 새 기준으로 받아들인다. 알림은 analyzer 의 Hold 가 몇 초 더 붙잡아 둔다.
+다만 주행 모드(analyzer.set_mode)에서는 새 자리를 받아들이지 않는다 (accept_new_spot=False): 달리는 중에 밀린 화물을
+정상으로 보면 안 되므로, 기준은 원래 위치에 남고 이동량은 그 위치 대비로 이어진다. 기준을 다시 잡는 것은 rebase() 뿐이다.
 
 Transfer.static_x / static_y 는 하중 이동(k x a)을 뺀 무게중심이다. 무게중심 위치 판정(cog.py zone)에 쓰면
 급제동 순간의 쏠림으로 오경보가 나지 않는다.
@@ -124,7 +126,8 @@ class TransferCheck:
         self.hist = collections.deque()         # 최근 COG_LAG 초 IMU (t, ax, ay, |gz|)
         self.prev_t = None                      # 마지막으로 무게중심을 본 시각
         self.settle = []                        # 이동한 화물의 새 자리 후보 [(t, X0, Y0)]
-        self.mute_pending = False               # rebase() 직후: 다음에 본 프레임부터 REBASE_MUTE_S 초 판정 보류
+        self.accept_new_spot = True             # False 면 이동한 화물의 새 자리를 기준으로 받아들이지 않는다 (analyzer 가 주행 모드에서 끈다)
+        self.mute_pending = False             # rebase() 직후: 다음에 본 프레임부터 REBASE_MUTE_S 초 판정 보류
         self.mute_until = None                  # 이 시각까지 판정 보류
         self._reset_judge()
 
@@ -210,7 +213,7 @@ class TransferCheck:
                 Y.a0 += a * dax
                 X.c0 += a * (sx - X.c0)
                 Y.c0 += a * (sy - Y.c0)
-        elif quiet:                             # 이동한 화물이 새 자리에서 가만히 있나
+        elif quiet and self.accept_new_spot:    # 이동한 화물이 새 자리에서 가만히 있나 (주행 모드에서는 안 본다: 밀린 채로 두면 경보가 이어진다)
             if self.settle:
                 mx = sum(s[1] for s in self.settle) / len(self.settle)
                 my = sum(s[2] for s in self.settle) / len(self.settle)
