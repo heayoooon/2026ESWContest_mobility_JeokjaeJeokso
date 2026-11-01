@@ -14,7 +14,7 @@ HTTP (계약: web/src/lib/twin-types.ts, twin-api.ts)
   GET  /api/stream       SSE, TwinState JSON 약 10 Hz, 5 s 마다 ': keepalive'
   GET  /api/state        TwinState JSON 한 번
   GET  /api/camera.jpg   최근 카메라 사진 (JPEG q80, 프레임마다 한 번만 만든다). 없으면 204
-  POST /api/control      {cmd: pause|resume|toggle}
+  POST /api/control      {cmd: pause|resume|toggle|rebase}. rebase = 기준 재설정 (실시간일 때만, UDP 5023 'rebase')
   POST /api/mode         {mode: load|drive} -> {ok, mode, sent, by}. 적용은 다음 프레임의 TwinState.mode 로 확인
   GET|POST /api/volume   {action: up|down|mute|unmute|toggle|set, value 0..1.5} -> {level, muted} (wpctl)
   POST /api/exit         키오스크 크로미움을 닫는다 (먼저 200 응답)
@@ -581,14 +581,14 @@ class Twin:
 
     def control(self, cmd):
         if cmd == 'rebase':
-            # 기준 재설정: 화물 이동 판정의 기준을 지금 상태로 (센서 파이 live_twin -> sensor_feed). 화면 상태는 안 바뀐다.
-            # 센서 쪽도 1초 안의 중복은 무시하지만, 여러 번 눌러도 한 번만 보낸다
+            # 기준 재설정: 화물 이동 판정의 기준을 지금 상태로 (센서 파이 sensor_feed 가 Analyzer.rebase). 화면 상태는 안 바뀐다.
+            # 적재 · 주행 모드와 같은 UDP 5023 으로 보낸다. 여러 번 눌러도 1초에 한 번만 보낸다
             now = time.time()
             if now - getattr(self, 'rebase_t', 0.0) < 1.0:
                 return dict(ok=True, sent=False, dup=True)
             self.rebase_t = now
             live = bool(self.snap and self.snap.get('source') == 'live')
-            sent = self.send('rebase') if live else False
+            sent = self.send('rebase', MODE_PORT) if live else False
             log.info('control rebase (sent %s, live %s)', sent, live)
             return dict(ok=True, sent=sent, live=live)
         with self.lock:
