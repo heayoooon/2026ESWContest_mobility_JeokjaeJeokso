@@ -384,6 +384,14 @@ The older `Start-IsaacTwin.bat` and original scripts are preserved.
   event SELECTION_CHANGED) now drops every selected path outside MOVABLE = ('/World/Cargo',), so only the cargo can
   be picked and moved (the cargo drag feature is unchanged). API 'select' (value: path(s), none = report) does what
   a click would; tested: PadInside / Terrain / RoadSurface / Cart dropped within a frame, /World/Cargo kept.
+- Driving review fixes (2026-11-02, PR #38 code review): turn_target is now the degrees still to turn (counted down,
+  unwrapped), so 180 / 270 / 360 deg turns go the right way; a turn's rate is capped at TURN_A_MAX = 2.5 m/s^2
+  sideways (60 km/h: ~7-9 deg/s instead of 80 deg/s = 2.4 G); with the steer slider / gyro / turn_gain also turning,
+  a turn ends once past the target or held still short of it (it used to stay 'turning' forever); reset and set_lane
+  clear the filtered turn rate (the placed truck yawed 11-48 deg); the gyro bias is relearned on live start / reset
+  and creeps (60 s) towards a lasting reading, so a bias caught while the rig was turned cannot make it circle; the
+  edge limit works in the travel direction (reversing too); a mode change re-uploads the real depth picture. Tested:
+  90 / 180 / -270 deg at 20 km/h end within 0.3 deg, 90 deg at 60 km/h peaks at ~2.1 m/s^2, turns with steer +-10 end.
 
 ## Realistic update - 2026-10-05
 
