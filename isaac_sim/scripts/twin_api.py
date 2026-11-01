@@ -22,8 +22,11 @@ COMMANDS = {
     'mode': 'value: "measured" (recorded replay) or "physics" (PhysX sandbox)',
     'run': 'value: recording id (e.g. 20261015_212927), list index, or part of its title',
     'play': 'start replay', 'pause': 'pause replay', 'reset': 'restart the recording / re-seat the cargo',
-    'go': 'drive at cruise speed', 'brake': 'stop the vehicle', 'turn_left': 'steer left (+25 deg/s)',
-    'turn_right': 'steer right (-25 deg/s)', 'straight': 'steer straight',
+    'go': 'drive at cruise speed', 'brake': 'stop the vehicle',
+    'turn_left': 'turn left now (value: degrees, default 90), then drive straight on the paved area',
+    'turn_right': 'turn right now (value: degrees, default 90)', 'turn': 'value: degrees to turn now (+ left)',
+    'straight': 'stop turning and keep the heading',
+    'select': 'value: prim path(s) to select; only the cargo (/World/Cargo...) can be selected / moved',
     'set': 'name: a slider or toggle from GET /twin/commands, value: number (clamped to its range) or true/false',
     'view': 'value: Front, Rear, Side, Aerial, Depth or Cab',
     'record_start': 'start saving data (recordings/<time>/)', 'record_stop': 'stop and save the recording',
@@ -69,8 +72,8 @@ class TwinAPI:
 
     # ---------------------------------------------------------------- HTTP side
     def register(self, root, mcp_file):
-        from fastapi import Body, HTTPException
-        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from fastapi import Body, HTTPException, Request
+        from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
         from omni.services.core import main, routers
 
         router = routers.ServiceAPIRouter()
@@ -120,11 +123,70 @@ class TwinAPI:
                 ok, jpeg = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 return Response(jpeg.tobytes(), media_type='image/jpeg')
 
+        @router.get('/view', response_class=HTMLResponse)
+        def view(request: Request):
+            # The stock page (/streaming/webrtc-demo/) asks Kit for a 1280x720 window and the player then caps the
+            # bitrate from that size (~7-12 Mbps): a small, soft picture. This page asks for 1920x1080 and a higher
+            # cap; the player's own QoS still lowers it on a slow link. ?resolution=WxH&maxbitrate=kbps override.
+            # 40/60 Mbps caps stuttered over the internet (bursts beyond the upload); 20/30 Mbps still look sharp.
+            q = dict(request.query_params)
+            res = getattr(api.twin, 'stream_res', '1920x1080')          # the twin's --stream-res
+            big = int(res.lower().split('x')[0]) > 2000
+            want = {'server': request.url.hostname, 'resolution': res, 'maxbitrate': '30000' if big else '20000'}
+            if any(k not in q for k in want):
+                from urllib.parse import urlencode
+                return RedirectResponse('/twin/view?' + urlencode({**want, **q}))
+            w, h = (int(v) for v in q['resolution'].lower().split('x'))
+            return VIEW_HTML.replace('__W__', str(w)).replace('__H__', str(h))
+
+        @router.get('/js/{name}')
+        def player_js(name: str):
+            # kit-player.js starts its worker from ./js/ragnarokworker.js, i.e. /twin/js/ for the page above
+            import omni.kit.app
+            mgr = omni.kit.app.get_app().get_extension_manager()
+            ext = mgr.get_extension_id_by_module('omni.services.streamclient.webrtc')
+            path = Path(mgr.get_extension_path(ext)) / 'web' / 'js' / Path(name).name
+            if not path.exists():
+                raise HTTPException(status_code=404)
+            return FileResponse(path, media_type='application/javascript')
+
         @router.get('/mcp')
         def mcp():
             return FileResponse(mcp_file, filename='isaac_twin_mcp.py', media_type='text/x-python')
 
         main.register_router(router=router, prefix='/twin', tags=['twin'])
+
+
+VIEW_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>적재적소 트윈 (고화질)</title>
+<style>
+html,body{margin:0;height:100%;background:#000;color:#ddd;font-family:sans-serif;overflow:hidden}
+#wrap{position:absolute;inset:0;display:flex;align-items:center;justify-content:center}
+/* keep the element exactly 16:9-ish (W:H) so mouse positions map 1:1 onto the stream */
+#remote-video{width:min(100vw,calc(100vh*__W__/__H__))!important;height:auto!important;aspect-ratio:__W__/__H__;background:#000}
+#bar{position:absolute;right:10px;bottom:8px;display:flex;gap:8px;opacity:.35}
+#bar:hover{opacity:1}
+button{background:#333;color:#eee;border:1px solid #555;border-radius:6px;padding:6px 12px;font-size:14px;cursor:pointer}
+#overlay{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+#play{font-size:28px;padding:18px 34px;background:#b02a2a}
+</style></head><body>
+<div id="wrap"><video id="remote-video" width="__W__" height="__H__" playsinline tabindex="-1"></video><audio id="remote-audio"></audio></div>
+<div id="overlay"><button id="play" disabled>▶ 연결 중…</button></div>
+<div id="bar"><button id="full">전체 화면</button><button id="stop" disabled>■ 끊기</button></div>
+<script src="/streaming/webrtc-demo/js/kit-player.js"></script>
+<script>
+(async()=>{
+  const play=document.getElementById('play'),stop=document.getElementById('stop');
+  await SetupWebRTCPlayer({videoElementId:'remote-video',audioElementId:'remote-audio',playElement:play,stopElement:stop,
+                           videoWidth:__W__,videoHeight:__H__});
+  play.disabled=false;play.textContent='▶ 보기';
+  const overlay=document.getElementById('overlay');
+  play.addEventListener('click',()=>{overlay.style.display='none';stop.disabled=false;});
+  stop.addEventListener('click',()=>{overlay.style.display='';play.textContent='▶ 다시 보기';stop.disabled=true;});
+  document.getElementById('full').addEventListener('click',()=>document.documentElement.requestFullscreen());
+})();
+</script></body></html>'''
 
 
 GUIDE_HTML = '''<!doctype html><html lang="ko"><head><meta charset="utf-8">

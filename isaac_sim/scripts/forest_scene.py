@@ -131,6 +131,45 @@ def move_link(prim, a, b, radius):
 
 
 ROAD_EDGE = road_path.WIDTH / 2 + road_path.SHOULDER      # asphalt + gravel shoulder half-width (8.5 m)
+APRON = road_path.APRON
+OUTER_EDGE = ROAD_EDGE + APRON                             # outer edge of the paved test area + shoulder (48.5 m)
+
+
+def paved_distance(road, x, y):
+    """Distance used for the terrain: 0 on the paved area (inside the loop and on the apron), the distance from
+    the centreline minus the apron outside it, so terrain_height's road edge falls at the apron's edge."""
+    dist, side = road.distance(x, y)
+    return np.where(side > 0, 0., np.maximum(0., dist - APRON))
+
+
+class CirclePath:
+    """Minimal road-like circle (length, offsets) for ribbon(): painted guide circles on the pad."""
+
+    def __init__(self, cx, cy, r):
+        self.cx, self.cy, self.r = cx, cy, r
+        self.length = 2 * math.pi * r
+
+    def offsets(self, s_values, d_values):
+        a = np.asarray(s_values) / self.r
+        rr = self.r - np.asarray(d_values)              # + d = left of counter-clockwise travel = inwards
+        return np.column_stack([self.cx + rr * np.cos(a), self.cy + rr * np.sin(a)])
+
+
+def fan_mesh(stage, path, centre, rim, z, mat, uv_tile):
+    """Convex polygon (rim counter-clockwise) as a triangle fan around centre, faces up, world-space UVs."""
+    pts = np.vstack([[centre[0], centre[1]], rim])
+    pts = np.column_stack([pts, np.full(len(pts), z)])
+    n = len(rim)
+    tris = np.column_stack([np.zeros(n, int), 1 + np.arange(n), 1 + (np.arange(n) + 1) % n])
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(pts, np.float32)))
+    mesh.CreateFaceVertexCountsAttr(Vt.IntArray([3] * n))
+    mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(tris.ravel().tolist()))
+    mesh.CreateSubdivisionSchemeAttr('none')
+    st = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar('st', Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.vertex)
+    st.Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(pts[:, :2] / uv_tile, np.float32)))
+    bind(mesh.GetPrim(), mat)
+    return mesh
 
 
 def terrain_height(x, y, dist):
@@ -522,6 +561,9 @@ class ForestScene:
         fl = Sdf.ValueTypeNames.Float
         self.mats['asphalt_pbr'] = mdl_material(self.stage, 'AsphaltPBR', base_mdl('Natural', 'Asphalt'), {
             'diffuse_tint': (c3, Gf.Vec3f(.78, .78, .8)), 'reflection_roughness_constant': (fl, .62)})
+        self.mats['pad_pbr'] = mdl_material(self.stage, 'PadAsphaltPBR', base_mdl('Natural', 'Asphalt'), {
+            # darker than the loop (.9 read as white in the noon sun), so the loop's lanes stand out on the pad
+            'diffuse_tint': (c3, Gf.Vec3f(.5, .5, .52)), 'reflection_roughness_constant': (fl, .7)})
         self.mats['gravel_pbr'] = mdl_material(self.stage, 'GravelPBR', base_mdl('Natural', 'Soil_Rocky'), {
             'diffuse_tint': (c3, Gf.Vec3f(.62, .6, .58))})
         self.mats['grass_pbr'] = mdl_material(self.stage, 'GrassPBR', base_mdl('Natural', 'Grass_Countryside'), {
@@ -534,19 +576,31 @@ class ForestScene:
         self.mats['dirt_pbr'] = mdl_material(self.stage, 'DirtPBR', base_mdl('Natural', 'Dirt'))
 
     def real_road(self):
-        """Closed four-lane loop (road_path.Road): asphalt and shoulder ribbons, markings, posts, terrain."""
+        """Closed four-lane loop (road_path.Road) round a paved test area: the whole interior and an apron outside
+        the loop are asphalt, so the truck can turn off the loop anywhere (2026-11-01, user: a left turn should
+        happen at once, not when the road bends). Markings, posts on the apron's outer edge, terrain."""
         s, env, m = self.stage, '/World/Environment', self.mats
         road = self.road = road_path.Road()
         W = road_path.WIDTH
-        x0, x1, y0, y1 = road.bounds(70.)
+        x0, x1, y0, y1 = road.bounds(70. + APRON)
         # One flat invisible collider under everything keeps the original contact behaviour.
         prim = shape(s, f'{env}/Ground', 'box', ((x0 + x1) / 2, (y0 + y1) / 2, -.5), (x1 - x0, y1 - y0, 1.), m['asphalt'], collision=True)
         UsdGeom.Imageable(prim).MakeInvisible()
         ribbon(s, f'{env}/RoadSurface', road, -W / 2, W / 2, m['asphalt_pbr'], z=.004, uv_tile=3.5)
-        # Grass shoulders (2026-11-01): the coarse terrain dips into the ditch across the shoulder, and the gravel
-        # showing through it looked like brown bare triangles beside the road.
-        ribbon(s, f'{env}/ShoulderLeft', road, W / 2, W / 2 + road_path.SHOULDER, m['grass_pbr'], z=-.006, uv_tile=1.6)
-        ribbon(s, f'{env}/ShoulderRight', road, -W / 2 - road_path.SHOULDER, -W / 2, m['grass_pbr'], z=-.006, uv_tile=1.6)
+        # Paved test area: the interior (convex, so a fan from the centre) and the outer apron, a shade lighter
+        # than the loop and a little lower so the loop's asphalt and markings stay on top.
+        rim = road.offsets(np.arange(0., road.length, 1.), np.full(len(np.arange(0., road.length, 1.)), W / 2 - .5))
+        fan_mesh(s, f'{env}/PadInside', rim.mean(0), rim, .002, m['pad_pbr'], 3.5)
+        ribbon(s, f'{env}/PadApron', road, -road_path.PAVED_OUT, -W / 2 + .5, m['pad_pbr'], z=.002, uv_tile=3.5)
+        # Grass shoulder only outside the apron (2026-11-01: the gravel showing through the dipping terrain looked
+        # like brown bare triangles).
+        ribbon(s, f'{env}/ShoulderRight', road, -road_path.PAVED_OUT - road_path.SHOULDER, -road_path.PAVED_OUT,
+               m['grass_pbr'], z=-.006, uv_tile=1.6)
+        # Pad markings: apron edge line and a 40 m turning circle in the middle.
+        ribbon(s, f'{env}/ApronEdge', road, -road_path.PAVED_OUT + .3, -road_path.PAVED_OUT + .45, m['paint_white'], z=.008, uv_tile=1.)
+        cx, cy = rim.mean(0)
+        for name, r in (('TurnCircle', 40.), ('TurnCircleInner', 39.4)):
+            ribbon(s, f'{env}/{name}', CirclePath(cx, cy, r), -.075, .075, m['paint_white'], z=.008, uv_tile=1.)
         # Markings: double yellow centre line, dashed white lane lines, solid white edge lines.
         for name, d in (('CenterLineA', -.14), ('CenterLineB', .14)):
             ribbon(s, f'{env}/{name}', road, d - .06, d + .06, m['paint_yellow'], z=.010, uv_tile=1.)
@@ -555,17 +609,17 @@ class ForestScene:
         dashes = [(a, a + 3.) for a in np.arange(0., road.length - 3., 9.)]
         for name, d in (('LaneLineLeft', road_path.LANE_W), ('LaneLineRight', -road_path.LANE_W)):
             ribbon(s, f'{env}/{name}', road, d - .075, d + .075, m['paint_white'], z=.010, uv_tile=1., s_ranges=dashes)
-        # Delineator posts every 12 m on both shoulders.
+        # Delineator posts every 12 m along the apron's outer edge.
+        side = -1
         for k, sv in enumerate(np.arange(0., road.length, 12.)):
-            for side in (-1, 1):
-                (px, py), th = road.frenet_to_xy(sv, side * (W / 2 + 2.0))
-                root = f'{env}/Post_{side+1}_{k}'
-                shape(s, root, 'box', (px, py, .43), (.10, .10, .85), m['paint_white'], (0, 0, math.degrees(th)))
-                shape(s, root + '/Reflector', 'box', (0, -side * .505, .25), (.8, .04, .18), m['yellow'])
-        # Terrain grid (2 m) over the loop; distance to the centreline shapes ditch, verge and forest floor.
+            (px, py), th = road.frenet_to_xy(sv, -(road_path.PAVED_OUT + 2.0))
+            root = f'{env}/Post_{side+1}_{k}'
+            shape(s, root, 'box', (px, py, .43), (.10, .10, .85), m['paint_white'], (0, 0, math.degrees(th)))
+            shape(s, root + '/Reflector', 'box', (0, -side * .505, .25), (.8, .04, .18), m['yellow'])
+        # Terrain grid (2 m) over the area; the paved distance shapes ditch, verge and forest floor outside the apron.
         xs = np.arange(x0, x1 + 1, 2.)
         ys = np.arange(y0, y1 + 1, 2.)
-        dist_fn = lambda gx, gy: road.distance(gx, gy)[0]
+        dist_fn = lambda gx, gy: paved_distance(road, gx, gy)
         grid_mesh(s, f'{env}/Terrain', xs, ys, m['grass_pbr'], 2.2, terrain_height,
                   subsets={'Verge': (0, ROAD_EDGE + 8., m['grass_pbr']), 'Floor': (ROAD_EDGE + 8., 1e9, m['grass_floor_pbr'])},
                   dist_fn=dist_fn)
@@ -589,8 +643,8 @@ class ForestScene:
         rail = M.pbr(s, 'Guardrail', (.72, .74, .76), .42, .85)
         post = M.pbr(s, 'GuardrailPost', (.5, .52, .54), .5, .7)
         w_beam = [(0., .42), (-.03, .46), (.05, .52), (-.02, .59), (.05, .66), (-.03, .72), (0., .76)]
-        for side in (-1, 1):
-            d = side * (ROAD_EDGE + .35)
+        for side in (-1,):                      # outer edge of the apron only (the interior is paved)
+            d = side * (OUTER_EDGE + .35)
             profile = [(side * dy, dz) for dy, dz in w_beam]
             sweep_profile(s, f'{env}/Guardrail{side+1}', road, d, profile, rail, step=1., uv_scale=1.)
             for k, sv in enumerate(np.arange(0., road.length, 2.)):
@@ -600,7 +654,7 @@ class ForestScene:
         wire = M.pbr(s, 'PowerWire', (.06, .06, .06), .6, .2)
         tops = []
         for k, sv in enumerate(np.arange(10., road.length, 45.)):
-            (px, py), th = road.frenet_to_xy(sv, ROAD_EDGE + 3.2)
+            (px, py), th = road.frenet_to_xy(sv, -(OUTER_EDGE + 3.2))
             z0 = float(self.ground_z(np.array([px]), np.array([py]))[0])
             root = f'{env}/Pole{k}'
             pole = UsdGeom.Xform.Define(s, root).GetPrim()
@@ -619,9 +673,9 @@ class ForestScene:
         signs = {'speed': decal_material(s, 'SignSpeed', NVIDIA.parents[0] / 'truck' / 'sign_speed60.png'),
                  'left': decal_material(s, 'SignCurveLeft', NVIDIA.parents[0] / 'truck' / 'sign_curve_left.png')}
         sign_post = M.pbr(s, 'SignPost', (.55, .56, .58), .45, .8)
-        placements = [(road.start_s + 45., 'speed')] + [(sv, 'left') for sv in (100., 203., 386., 489.)]
+        placements = [(road.start_s + 45., 'speed')] + [(sv - 20., 'left') for sv in road.corner_s]   # 20 m before each corner
         for k, (sv, kind) in enumerate(placements):
-            (px, py), th = road.frenet_to_xy(sv, -(ROAD_EDGE + 1.3))
+            (px, py), th = road.frenet_to_xy(sv, -(OUTER_EDGE + 1.3))
             tx, ty = math.cos(th), math.sin(th)
             nx, ny = -math.sin(th), math.cos(th)
             shape(s, f'{env}/SignPost{k}', 'cylinder', (px, py, 1.3), (.04, .04, 2.6), sign_post)
@@ -629,9 +683,9 @@ class ForestScene:
             shape(s, f'{env}/SignBack{k}', 'box', (px + tx * .005, py + ty * .005, 2.35), (.01, .84, .84), sign_post, (0, 0, math.degrees(th)))
 
     def ground_z(self, x, y):
-        """Terrain height at world points (arrays), via the road distance field."""
+        """Terrain height at world points (arrays), via the paved distance field."""
         x, y = np.asarray(x, float), np.asarray(y, float)
-        dist, _ = self.road.distance(x, y)
+        dist = paved_distance(self.road, x, y)
         return terrain_height(x.ravel(), y.ravel(), dist).reshape(x.shape)
 
     def _instancer(self, path, names, folder_of, entries):
@@ -652,29 +706,30 @@ class ForestScene:
         return inst
 
     def real_forest(self):
-        """Trees in rows along both sides of the loop plus a sparser scatter inside and outside it;
-        grass, leaf litter and rocks in Frenet offsets from the road."""
+        """Trees in rows beyond the apron plus a sparser scatter further out (the interior is paved since
+        2026-11-01); grass and rocks in Frenet offsets from the road."""
         rng = random.Random(124)
         road = self.road
         names = list(TREES)
         weights = [TREES[n][0] for n in names]
         light = [names.index('White_Ash'), names.index('Yellow_Pine')]
         trees = []
-        for side in (-1, 1):
+        for side in (-1,):
             for row in range(TREE_ROWS):
                 spacing = 7.5 + row * 1.5
                 for sv in np.arange(rng.uniform(0, spacing), road.length, spacing):
-                    d = side * (ROAD_EDGE + 3.5 + row * 4.8 + rng.uniform(-1.4, 1.4))
+                    d = side * (OUTER_EDGE + 3.5 + row * 4.8 + rng.uniform(-1.4, 1.4))
                     k = rng.choices(range(len(names)), weights)[0]
                     while row == 0 and names[k] == 'Red_Oak':   # wide low crowns would hang over the road
                         k = rng.choices(range(len(names)), weights)[0]
                     (x, y), _ = road.frenet_to_xy(sv + rng.uniform(-2, 2), d)
                     trees.append((x, y, rng.uniform(*TREES[names[k]][1:]), rng.uniform(0, 360), k))
-        # Scatter further away (inside and outside the loop) so the forest does not end abruptly.
-        x0, x1, y0, y1 = road.bounds(55.)
+        # Scatter further away (outside the rows) so the forest does not end abruptly.
+        x0, x1, y0, y1 = road.bounds(55. + APRON)
         cand = np.column_stack([np.random.RandomState(7).uniform(x0, x1, 1600), np.random.RandomState(8).uniform(y0, y1, 1600)])
-        dist, _ = road.distance(cand[:, 0], cand[:, 1])
-        for (x, y), dd in zip(cand[dist > ROAD_EDGE + 3.5 + TREE_ROWS * 4.8 + 2.], dist[dist > ROAD_EDGE + 3.5 + TREE_ROWS * 4.8 + 2.]):
+        dist, side = road.distance(cand[:, 0], cand[:, 1])
+        far_out = (side < 0) & (dist > OUTER_EDGE + 3.5 + TREE_ROWS * 4.8 + 2.)
+        for (x, y), dd in zip(cand[far_out], dist[far_out]):
             if rng.random() < .22:
                 k = rng.choice(light) if rng.random() < .5 else rng.choices(range(len(names)), weights)[0]
                 trees.append((x, y, rng.uniform(*TREES[names[k]][1:]), rng.uniform(0, 360), k))
@@ -691,10 +746,11 @@ class ForestScene:
         self.tree_count = len(trees)
 
         def frenet_entries(count, d_lo, d_hi, scale_fn, proto_fn, z_off):
+            count = int(count * road.length / 571.3)          # same density as on the original ~570 m loop
             sv = np.array([rng.uniform(0, road.length) for _ in range(count)])
-            dv = np.array([rng.choice((-1, 1)) * rng.uniform(d_lo, d_hi) for _ in range(count)])
+            dv = np.array([-rng.uniform(d_lo, d_hi) - APRON for _ in range(count)])   # outside the apron only
             xy = road.offsets(sv, dv)
-            z = terrain_height(xy[:, 0], xy[:, 1], np.abs(dv)) + z_off
+            z = terrain_height(xy[:, 0], xy[:, 1], np.abs(dv) - APRON) + z_off
             return [((float(xy[i, 0]), float(xy[i, 1]), float(z[i])), scale_fn(k), rng.uniform(0, 360), k)
                     for i, k in enumerate(proto_fn() for _ in range(count))]
         cover_scale = {0: (.8, 1.3), 1: (.8, 1.4), 2: (.9, 1.6), 3: (.35, .6)}

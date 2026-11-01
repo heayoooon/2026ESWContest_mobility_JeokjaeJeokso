@@ -25,6 +25,8 @@ parser.add_argument('--verify', action='store_true')
 parser.add_argument('--share', action='store_true',
                     help='stream this Isaac Sim window to a browser (WebRTC, one remote viewer with control)')
 parser.add_argument('--vehicle', choices=('truck', 'cart'), default='truck')
+parser.add_argument('--stream-res', default=os.environ.get('TWIN_STREAM_RES', '1920x1080'),
+                    help='share mode: window and renderer size WxH = the streamed picture (e.g. 2560x1440)')
 args, kit_args = parser.parse_known_args()
 sys.argv = [sys.argv[0]] + kit_args
 os.environ['OMNI_KIT_ACCEPT_EULA'] = 'YES'
@@ -39,7 +41,11 @@ if args.share:
     # copied from NVIDIA's headless webrtc app) left visible shimmer on foliage and thin edges and
     # rendered the realistic scene about twice as slowly (61 ms vs 32 ms per frame).
     # SimulationApp 4.2 forwards unknown command-line arguments to Kit.
-    config.update(window_width=1600, window_height=900, width=1280, height=720)
+    # While a viewer is connected the window is held at the renderer resolution (/app/renderer/resolution, the
+    # 'width'/'height' here) and that is what gets encoded: at the old 1280x720 the 1080p stream was an upscale of a
+    # ~840x630 viewport. Window and renderer are both the stream size (--stream-res); /twin/view asks for the same.
+    sw, sh = (int(v) for v in args.stream_res.lower().split('x'))
+    config.update(window_width=sw, window_height=sh, width=sw, height=sh)
     sys.argv += ['--/app/window/drawMouse=true',
                  '--enable', 'omni.services.streamclient.webrtc']
 app = SimulationApp(config, experience=str(kit))
@@ -79,6 +85,7 @@ BED_MM = (250., 392.)
 LEVEL_NAMES = ('OK', 'CAUTION', 'WARNING', 'DANGER')
 LEVEL_UI = (0xff60d060, 0xff30d0ff, 0xff2080ff, 0xff3030ff, 0xff909090)   # omni.ui 0xAABBGGRR; [4] = n/a
 LEVEL_RGB = ((.08, .8, .25), (1., .8, .1), (1., .4, .05), (1., .06, .04))
+TENSION_MAX_N = 300.   # belt tension upper limit (N) in the twin; team_judge.TWIN_ENV sets the same for the team code
 DISCRETE = {'risk', 'lv_load', 'lv_cog', 'lv_move', 'lv_c1', 'lv_c2', 'rated_kg', 'tension_max_N'}
 TRUCK = args.vehicle == 'truck'
 
@@ -107,7 +114,7 @@ def stream_urls():
     ips = {info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
     tailnet = ipaddress.ip_network('100.64.0.0/10')
     ordered = sorted(ips, key=lambda ip: (ipaddress.ip_address(ip) not in tailnet, ip))
-    return [f'http://{ip}:{STREAM_PORT}/streaming/webrtc-demo/?server={ip}' for ip in ordered
+    return [f'http://{ip}:{STREAM_PORT}/twin/view?server={ip}' for ip in ordered      # high-quality viewer page
             if not ip.startswith('127.')]
 
 
@@ -236,11 +243,14 @@ class Twin:
             for key,value in ForestScene.render_settings().items():
                 settings.set(key,value)
         self.contact=PhysicsMaterial('/World/Materials/Contact',static_friction=.6,dynamic_friction=.48,restitution=.03)
-        # Vehicle motion lives in road (Frenet) coordinates: s along the loop, d lateral (+ = left), psi = heading
-        # relative to the road tangent. Right-hand traffic: outer right lane by default.
+        # Vehicle motion (2026-11-01): a free world pose (xy, yaw) on the paved test area round the loop, so a turn
+        # happens the moment it is asked for. s / d / psi are the road coordinates of that pose (d + = inside the
+        # loop, psi = heading relative to the travel direction dir: +1 counter-clockwise, -1 clockwise). Right-hand
+        # traffic: outer right lane by default.
         self.road=getattr(self.scene,'road',None) or road_path.Road()
         self.lane_default=road_path.RIGHT_LANE
         self.s=self.road.start_s;self.d=self.lane_default;self.psi=0.
+        self.dir=1;self.turn_target=None;self.gz_bias=None;self.edge_stop=False
         start,heading=self.road.frenet_to_xy(self.s,self.d)
         self.xy=np.array(start);self.yaw=math.degrees(heading)
         self.cart=self.world.scene.add(SwitchableCuboid('/World/Cart',name='instrumented_cart',
@@ -337,6 +347,7 @@ class Twin:
         self.body_roll=0.;self.body_pitch=0.;self.steer_shown=0.
         self.velocity=0.;self.previous_velocity=0.;self.frame_count=0;self.last_ui=0.
         self.cam_image=ui.ByteImageProvider();self.depth_image=ui.ByteImageProvider()
+        self.real_depth=False          # depth_image shows the real D435i depth (else the simulated camera's)
         self.last_depth=None;self.latest={};self.last_export='';self.pending_capture=None
         self.recorder=None   # nothing is written until 'Start recording' is pressed
         self.shift=CargoShift()   # cargo-shift judgement from the COG history (cargo_shift.py)
@@ -380,6 +391,7 @@ class Twin:
         self.protect_scene()
         print('FOREST_TWIN_READY',flush=True)
         if args.share:
+            self.stream_res=args.stream_res
             urls=stream_urls()
             for url in urls:
                 print('SHARE_URL',url,flush=True)
@@ -390,11 +402,24 @@ class Twin:
                 recordings_web.register(ROOT,lambda:self.recorder['dir'] if self.recorder else None,
                                         to_display=lambda name:self.api.submit('send_to_display',value=name))
                 self.api.register(ROOT,Path(__file__).with_name('isaac_twin_mcp.py'))
-                print('CONTROL_URL',urls[0].split('/streaming')[0]+'/twin/' if urls else None,flush=True)
-                self.download_url=urls[0].split('/streaming')[0]+'/recordings/' if urls else None
+                base=urls[0].split('/twin/view')[0] if urls else None
+                print('CONTROL_URL',base+'/twin/' if base else None,flush=True)
+                self.download_url=base+'/recordings/' if base else None
                 print('DOWNLOAD_URL',self.download_url,flush=True)
             except Exception:
                 traceback.print_exc()
+            # What the viewer actually gets (encode size, bitrate the stream's QoS settled on): /twin/state 'stream'
+            self.stream_qos={}
+            try:
+                from omni.kit.livestream import bind as livestream_bind   # not 'import omni...': omni would turn local
+                def on_qos(q):
+                    self.stream_qos={'encode':f'{q.encode_width}x{q.encode_height}','bitrate_kbps':int(q.qos_bitrate),   # the SDK reports kbps (31000 seen at ~31 Mbps)
+                                     
+                                     'fps':q.target_streaming_fps,'rtt_ms':q.average_rtd_ms,'t':time.strftime('%H:%M:%S')}
+                self.qos_live=livestream_bind.acquire_livestream_interface()
+                self.qos_id=self.qos_live.register_qos_status_callback(on_qos)
+            except Exception as e:
+                print('STREAM_QOS unavailable',repr(e),flush=True)
 
     # ------------------------------------------------------------------ frames
     def rig_to_cart(self,v):
@@ -422,6 +447,21 @@ class Twin:
             set_no_delete(prim,True)
             count+=1
         print(f'Protected {count} prims from deletion',flush=True)
+        # Only the cargo can be selected (and so moved with the Move / Rotate tool): the ground, road, plate and
+        # truck could be dragged up and down too (2026-11-01, user: "the floor height can be changed - stop it").
+        ctx=omni.usd.get_context()
+        self.selection_guard=ctx.get_stage_event_stream().create_subscription_to_pop(self.guard_selection,name='twin_selection_guard')
+
+    MOVABLE=('/World/Cargo',)
+
+    def guard_selection(self,event):
+        if event.type!=int(omni.usd.StageEventType.SELECTION_CHANGED):
+            return
+        sel=omni.usd.get_context().get_selection()
+        paths=list(sel.get_selected_prim_paths())
+        keep=[p for p in paths if any(p==m or p.startswith(m+'/') for m in self.MOVABLE)]
+        if keep!=paths:
+            sel.set_selected_prim_paths(keep,False)
 
     def recover(self):
         """Best-effort restart of the simulation after an unexpected error."""
@@ -496,16 +536,16 @@ class Twin:
                             self.slider('steer','회전 (도/초, + 왼쪽)',0,-50,50)
                             self.slider('lateral','차선 위치 (m, + 왼쪽)',self.lane_default,-6.,6.).add_value_changed_fn(lambda m:self.set_lane(m.as_float))
                             self.toggle('imu_motion','재생: 기록된 IMU대로 달리기',True)
-                            self.slider('turn_gain','재생: 회전 반영 비율',.25 if TRUCK else 1.,0,1)
+                            self.slider('turn_gain','재생: 회전 반영 비율',0.,0,1)    # 0: only the user turns the truck
                             self.slider('tilt_gain','차체 기울기 (도/G)',4.,0,10)
                             if not TRUCK:
                                 self.toggle('pull','대차를 앞에서 끌기',True)
                             with ui.HStack(height=23):
                                 ui.Button('출발',clicked_fn=self.go)
                                 ui.Button('정지',clicked_fn=self.brake)
-                                ui.Button('좌회전',clicked_fn=lambda:self.models['steer'].set_value(25))
-                                ui.Button('우회전',clicked_fn=lambda:self.models['steer'].set_value(-25))
-                                ui.Button('직진',clicked_fn=lambda:self.models['steer'].set_value(0))
+                                ui.Button('좌회전',clicked_fn=lambda:self.turn(90))
+                                ui.Button('우회전',clicked_fn=lambda:self.turn(-90))
+                                ui.Button('직진',clicked_fn=self.straight)
                     with ui.CollapsableFrame('화물 · 벨트 · 물리',collapsed=True):
                         with ui.VStack(spacing=3):
                             self.slider('mass','화물 무게 (kg)',14,.1,30)
@@ -515,9 +555,9 @@ class Twin:
                             self.slider('cargo_y','화물 좌우 (m, + 오른쪽)',0,-.2,.2)
                             # Each belt has its own preload and hook, and its own tension cell (c1 front, c2 rear).
                             # 'Strap preload' / 'Straps connected' set both belts at once (and the API keeps them).
-                            both=self.slider('pretension','두 벨트 조임 (N)',8,0,98)
-                            self.slider('pretension_c1','앞벨트 c1 조임 (N)',8,0,98)
-                            self.slider('pretension_c2','뒷벨트 c2 조임 (N)',8,0,98)
+                            both=self.slider('pretension','두 벨트 조임 (N)',8,0,TENSION_MAX_N)
+                            self.slider('pretension_c1','앞벨트 c1 조임 (N)',8,0,TENSION_MAX_N)
+                            self.slider('pretension_c2','뒷벨트 c2 조임 (N)',8,0,TENSION_MAX_N)
                             both.add_value_changed_fn(lambda m:[self.models[k].set_value(m.as_float) for k in ('pretension_c1','pretension_c2')])
                             self.slider('stiffness','벨트 강성 (N/m)',1500,100,5000)
                             both=self.toggle('straps','두 벨트 연결',True)
@@ -553,9 +593,9 @@ class Twin:
                             self.labels['perf']=ui.Label('',height=20)
                     with ui.CollapsableFrame('D435i 카메라',collapsed=False):
                         with ui.VStack(spacing=3):
-                            ui.Label('기록된 컬러 영상 (센서와 같은 시각)',height=20)
+                            self.labels['cam_title']=ui.Label('기록된 컬러 영상 (센서와 같은 시각)',height=20)
                             ui.ImageWithProvider(self.cam_image,height=200,fill_policy=ui.IwpFillPolicy.IWP_PRESERVE_ASPECT_FIT)
-                            ui.Label('시뮬레이션 깊이 영상 (m)',height=20)
+                            self.labels['depth_title']=ui.Label('시뮬레이션 깊이 영상 (m)',height=20)
                             ui.ImageWithProvider(self.depth_image,height=180,fill_policy=ui.IwpFillPolicy.IWP_PRESERVE_ASPECT_FIT)
                     self.labels['status']=ui.Label('준비됨',height=48,word_wrap=True)
         self._setting_time=False;self.camera_view=0
@@ -563,10 +603,49 @@ class Twin:
     def value(self,key):
         return self.models[key].as_float
 
+    D435I_MIN_SPAN_MM=150      # depth colours span the frame's own 2-98 % range, at least this wide
+
+    def add_d435i_view(self,viewport_window):
+        """The 깊이 카메라 view: the real D435i colour and depth pictures (live from the sensor Pi, or the recording)
+        over the viewport (2026-11-01, user: "show the D435i's own picture"). Hidden in the other views and when
+        there is no real frame (physics mode): then the simulated depth camera's view shows as before."""
+        if not viewport_window or not hasattr(viewport_window,'get_frame'):
+            return
+        self.d435i_frame=viewport_window.get_frame('twin_d435i')
+        with self.d435i_frame:
+            with ui.ZStack():
+                ui.Rectangle(style={'background_color':0xff141414})
+                with ui.VStack(spacing=6):
+                    ui.Spacer(height=84)                 # below the toolbar and the logos
+                    self.labels['d435i_title']=ui.Label('',height=26,alignment=ui.Alignment.CENTER,
+                                                        style={'font_size':20,'color':0xffe0e0e0})
+                    with ui.HStack(spacing=12):
+                        ui.Spacer(width=8)
+                        for title,provider in (('컬러 영상',self.cam_image),('깊이 영상 (빨강 = 가까움, 파랑 = 멂)',self.depth_image)):
+                            with ui.VStack(spacing=4):
+                                ui.Label(title,height=22,alignment=ui.Alignment.CENTER,style={'font_size':16,'color':0xffc8c8c8})
+                                ui.ImageWithProvider(provider,fill_policy=ui.IwpFillPolicy.IWP_PRESERVE_ASPECT_FIT)
+                        ui.Spacer(width=8)
+                    ui.Spacer(height=16)
+        self.d435i_frame.visible=False
+
+    def depth_rgba(self,depth_mm):
+        """Real depth (mm, 0 = no reading) -> turbo colours, near red / far blue, no reading black. The range is the
+        frame's own (the tilted camera sees 250-900 mm across the picture; a fixed scale left the cargo all red)."""
+        d=np.asarray(depth_mm,np.float32)
+        valid=d[d>0]
+        near,far=(np.percentile(valid,(2,98)) if valid.size else (300.,600.))
+        far=max(far,near+self.D435I_MIN_SPAN_MM)
+        x=np.clip((far-d)/(far-near),0,1)
+        rgb=cv2.applyColorMap(np.uint8(x*255),cv2.COLORMAP_TURBO)
+        rgb[d<=0]=0
+        return cv2.cvtColor(rgb,cv2.COLOR_BGR2RGBA)
+
     def add_logos(self,viewport_window):
         """Overlay the two transparent logos in the viewport's top corners (window only, not in captures)."""
         if not viewport_window or not hasattr(viewport_window,'get_frame'):
             return
+        self.add_d435i_view(viewport_window)       # first, so the logos stay on top of it
         self.logo_frame=viewport_window.get_frame('twin_logos')
         with self.logo_frame:
             with ui.VStack():
@@ -629,15 +708,33 @@ class Twin:
         self.reset_requested=True
 
     def set_lane(self,value):
-        self.d=value
+        """Put the truck into that lane of the loop (in its travel direction), lined up with the road."""
+        self.update_pose()
+        self.dir=1 if abs(self.psi)<=90 else -1
+        xy,heading=self.road.frenet_to_xy(self.s,self.dir*value)
+        self.xy=np.array(xy);self.yaw=math.degrees(heading)+(0. if self.dir>0 else 180.)
+        self.turn_target=None
         self.update_pose()
         self.place_cargo()
 
+    TURN_RATE=18.     # deg/s of a turn: 90 deg in ~5 s, about how a loaded truck takes a junction
+
+    def turn(self,degrees):
+        """Turn left (+) / right (-) by that many degrees, starting now, then drive straight on."""
+        self.models['steer'].set_value(0)
+        self.turn_target=self.yaw+float(degrees)
+        return {'ok':True,'message':f'turning {float(degrees):+.0f} deg'}
+
+    def straight(self):
+        """Stop any turn and keep the current heading."""
+        self.models['steer'].set_value(0)
+        self.turn_target=None
+        return {'ok':True,'message':'straight on'}
+
     def update_pose(self):
-        """World position and heading from the road coordinates (s, d, psi)."""
-        xy,heading=self.road.frenet_to_xy(self.s,self.d)
-        self.xy=np.array(xy)
-        self.yaw=math.degrees(heading)+self.psi
+        """Road coordinates (s, d, psi) of the world pose (xy, yaw)."""
+        self.s,self.d,th=self.road.project(float(self.xy[0]),float(self.xy[1]))
+        self.psi=(self.yaw-math.degrees(th)+540.)%360.-180.
 
     def seek(self,model):
         if not getattr(self,'_setting_time',False):
@@ -689,8 +786,27 @@ class Twin:
     # sight and nothing on the truck can get between the camera and them.
     VIEWS=('Front','Rear','Side','Aerial','Depth','Cab')     # API names
     VIEWS_KO=('앞','뒤','옆','위','깊이 카메라','운전석')
-    PRESETS={0:(.62,.58,.62),1:(-.75,.5,.62),2:(.05,.9,.32),3:(.02,0.,2.5)}
+    # Chase views sit ~20 deg up so the tree line and sky fill the top of the picture (2026-11-01, user: "an angle
+    # that always shows nature"; the old 36-40 deg views showed only the pad). They look straight at the truck, and
+    # a lens shift (the camera's vertical aperture offset) moves the picture up LENS_SHIFT_DEG instead: aiming at a
+    # point above the truck made zooming / orbiting go toward that empty point (user: "odd when zoomed").
+    PRESETS={0:(.72,.66,.40),1:(-.82,.5,.42),2:(.05,.95,.30),3:(.02,0.,2.5)}
+    LENS_SHIFT_DEG=8.
     DEPTH_VIEW,CAB_VIEW=4,5
+
+    def look_target(self,center,offset):
+        """The chase camera always aims at the truck's centre, so Kit's zoom and orbit centre on the truck."""
+        return center
+
+    def set_lens_shift(self):
+        """Shift the viewport picture up in the chase views (front / rear / side), none from above or the cab."""
+        cam=UsdGeom.Camera(self.stage.GetPrimAtPath('/OmniverseKit_Persp'))
+        if not cam:
+            return
+        deg=self.LENS_SHIFT_DEG if self.camera_view in (0,1,2) else 0.
+        focal=cam.GetFocalLengthAttr().Get() or 18.147
+        attr=cam.GetVerticalApertureOffsetAttr() or cam.CreateVerticalApertureOffsetAttr()
+        attr.Set(float(focal*math.tan(math.radians(deg))))
 
     def set_camera(self,index):
         self.camera_view=index
@@ -737,8 +853,9 @@ class Twin:
             self.cam_offset=None
         else:
             self.cam_offset=np.array(self.PRESETS.get(self.camera_view,self.PRESETS[0]))*zoom
-            eye=center+self.cart_vector(self.cam_offset);target=center
+            eye=center+self.cart_vector(self.cam_offset);target=self.look_target(center,self.cam_offset)
         set_camera_view(eye=eye,target=target,camera_prim_path='/OmniverseKit_Persp')
+        self.set_lens_shift()
         self.cam_dragging=False
 
     def user_navigating(self):
@@ -763,6 +880,7 @@ class Twin:
         if self.camera_view==self.CAB_VIEW and TRUCK:
             if self.cam_dragging:
                 self.camera_view=0            # the user orbited away from the cab: continue as a free chase view
+                self.set_lens_shift()
             else:
                 eye=self.world_point([*self.xy,0])+self.cart_vector([T.DRIVER['root'][0]+.08,T.DRIVER['root'][1],T.DRIVER['root'][2]+1.22])
                 self.place_camera(eye,eye+self.cart_vector([8.,0,-.6]))
@@ -773,7 +891,7 @@ class Twin:
             if np.linalg.norm(offset)<2.5:   # inside the truck or the cargo: back off to the default view
                 offset=np.array(self.PRESETS[0])*max(self.value('zoom'),4.)
             self.cam_offset=offset;self.cam_dragging=False
-        self.place_camera(center+self.cart_vector(self.cam_offset),center)
+        self.place_camera(center+self.cart_vector(self.cam_offset),self.look_target(center,self.cam_offset))
 
     def to_world(self,vec):
         grade=math.radians(self.value('grade'));bank=math.radians(self.value('bank'))
@@ -827,6 +945,9 @@ class Twin:
             self.team_live.reset();self.team_t=-1.;self.team_out={};self.team_clock=0.
         self.t=0.;self.distance=0.;self.velocity=0.
         self.s=self.road.start_s;self.d=self.value('lateral');self.psi=0.
+        self.dir=1;self.turn_target=None
+        xy,heading=self.road.frenet_to_xy(self.s,self.d)
+        self.xy=np.array(xy);self.yaw=math.degrees(heading)
         self.update_pose();self.heading_prev=self.yaw
         self.body_roll=self.body_pitch=0.
         self.place_cargo()
@@ -1223,9 +1344,9 @@ class Twin:
         active_dt=dt if self.playing else 0
         self.previous_velocity=self.velocity
         replay_imu=self.mode==0 and self.flag('imu_motion') and not live
-        lane=self.value('lateral')
         if replay_imu:
-            # Speed = base speed + recorded speed change; relative heading = scaled recorded yaw + lane keeping.
+            # Speed = base speed + recorded speed change. The recorded yaw turns the truck only when the user asks
+            # for it (turn_gain, default 0): heading is the user's.
             self.velocity=max(0.,self.base_speed(case)+(f.get('v_imu') or 0.))
             yaw_rate=(f.get('yaw_rate') or 0.)*self.value('turn_gain')
             a_fwd=f.get('a_fwd') or 0.
@@ -1236,29 +1357,59 @@ class Twin:
                 # driving off at once made the team's analyzer flag the settling as a cargo shift.
                 target=0.
             self.velocity+=float(np.clip(target-self.velocity,-self.value('accel')*active_dt,self.value('accel')*active_dt))
-            # Steering takes time on a real truck: the commanded turn rate is reached over ~0.6 s. A step
-            # (Turn left / Straight buttons) yawed the deck instantly and the strapped cargo slid 20-35 mm.
-            k=min(1.,active_dt/.6) if active_dt else 0.
-            self.yaw_rate_f=getattr(self,'yaw_rate_f',0.)+(self.value('steer')-getattr(self,'yaw_rate_f',0.))*k
-            yaw_rate=self.yaw_rate_f
             a_fwd=(self.velocity-self.previous_velocity)/dt if active_dt else 0.
-        desired=max(-35.,min(35.,-math.degrees(math.atan(1.2*(self.d-lane)))))   # lane keeping (deg, relative)
-        # the turn fades out smoothly near the +-30 deg limit instead of stopping dead at the clamp
-        fade=max(0.,1.-(self.psi/30.)**4) if yaw_rate*self.psi>0 else 1.
-        self.psi+=yaw_rate*fade*active_dt+(desired-self.psi)*min(1.,.8*active_dt)
-        # Relative heading and lane offset keep the whole 10 m truck on the asphalt: at 80 deg the rear swung over
-        # the rising verge and looked buried.
-        self.psi=max(-30.,min(30.,self.psi))
-        # Frenet integration along the loop: ds scaled by the curvature, d by the relative heading.
-        _,_,_,kappa=self.road.pose(self.s)
-        rel=math.radians(self.psi)
+            yaw_rate=0.
+        # Manual driving (2026-11-01, user: "left / right still follow the lane and turn on their own - the truck
+        # must move only as I control it"): no lane keeping and no rejoining the loop. The heading changes only
+        # from the steer slider, a turn from the buttons / API, the real rig's gyro in live mode and, if turn_gain
+        # is raised, the recording's yaw. At the paved area's outer edge the truck slows and stops instead of
+        # steering itself; turning away (it can turn on the spot) lets it drive on.
+        command=self.value('steer') if not replay_imu else 0.
+        if self.turn_target is not None:
+            # minus what the 0.6 s steering lag below still adds once the command drops (8 deg overshoot without)
+            left=(self.turn_target-self.yaw+540.)%360.-180.
+            err=left-.6*getattr(self,'yaw_rate_f',0.)
+            rate=max(self.TURN_RATE,math.degrees(self.velocity/12.))     # about a 12 m radius, like a junction
+            command+=max(-rate,min(rate,1.5*err))
+            # finish on the exact heading (ending on the lead-corrected error stopped ~1.6 deg short)
+            if abs(left)<.3 and abs(getattr(self,'yaw_rate_f',0.))<1.:
+                self.turn_target=None
+        if live:
+            gz=f.get('imu1_gz_dps')
+            if isinstance(gz,(int,float)):
+                # bias follows the gyro while it is quiet; > 6 deg/s above it is a real turn (gz + = left)
+                if self.gz_bias is None:
+                    self.gz_bias=float(gz)
+                elif abs(gz-self.gz_bias)<4.:
+                    self.gz_bias+=(gz-self.gz_bias)*min(1.,dt/5.)
+                w=gz-self.gz_bias
+                if abs(w)>6.:
+                    command+=max(-45.,min(45.,w))
+        # Steering takes time on a real truck: the commanded turn rate is reached over ~0.6 s. A step
+        # (Turn left / Straight buttons) yawed the deck instantly and the strapped cargo slid 20-35 mm.
+        k=min(1.,active_dt/.6) if active_dt else 0.
+        self.yaw_rate_f=getattr(self,'yaw_rate_f',0.)+(command-getattr(self,'yaw_rate_f',0.))*k
+        heading_rate=self.yaw_rate_f+yaw_rate
+        self.yaw=(self.yaw+heading_rate*active_dt+180.)%360.-180.
+        # Edge of the paved area (the guardrail is 1.5 m beyond it): limit the speed so the truck can still stop
+        # before it (3 m/s^2) while it heads outwards.
+        self.update_pose()
+        _,_,th,_=self.road.pose(self.s)
+        outward=math.sin(th)*math.cos(math.radians(self.yaw))-math.cos(th)*math.sin(math.radians(self.yaw))
+        limit=road_path.PAVED_OUT-(2. if TRUCK else 1.)
+        self.edge_stop=False
+        if outward>.02:
+            room=max(0.,(limit+self.d)/outward-3.)          # metres along the heading to the edge, 3 m spare
+            v_max=math.sqrt(2*3.*room)
+            if self.velocity>v_max:
+                self.velocity=v_max;self.edge_stop=v_max<.3
+                a_fwd=(self.velocity-self.previous_velocity)/dt if active_dt else 0.
         step=self.velocity*active_dt
-        self.s=(self.s+step*math.cos(rel)/max(.2,1.-kappa*self.d))%self.road.length
-        edge=road_path.WIDTH/2-(1.3 if TRUCK else .9)
-        lateral=step*math.sin(rel)
-        if lateral*self.d>0:                 # heading for the road edge: ease off over the last 1.5 m, no hard stop
-            lateral*=float(np.clip((edge-abs(self.d))/1.5,0,1))
-        self.d=float(np.clip(self.d+lateral,-edge,edge))
+        nxt=self.xy+step*np.array([math.cos(math.radians(self.yaw)),math.sin(math.radians(self.yaw))])
+        s_n,d_n,th_n=self.road.project(float(nxt[0]),float(nxt[1]))
+        if d_n<-limit:                                     # last resort: never past the edge
+            nxt=nxt+(-limit-d_n)*np.array([-math.sin(th_n),math.cos(th_n)])
+        self.xy=nxt
         self.distance+=step
         self.update_pose()
         # Lateral acceleration of the simulated path (road curve + relative turning) drives the body roll;
@@ -1666,13 +1817,13 @@ class Twin:
             if need:
                 p=100*belt/need
                 low=3 if p<50 else 2 if p<75 else 1 if p<100 else 0
-            hp=100*belt/80.
+            hp=100*belt/TENSION_MAX_N
             high=3 if hp>100 else 2 if hp>75 else 1 if hp>50 else 0
             levels[key]=max(low,high);mins[key]=need
         overall=Twin.combine([lv_load,lv_cog,max(levels.values())])
         return {'load_kg':cargo_kg,'measured_kg':(r.get('total_g') or 0.)/1000.,'lv_load':lv_load,'lv_cog':lv_cog,
                 'cog_margin_pct':margin,'lv_c1':levels['c1'],'lv_c2':levels['c2'],'c1_min_N':mins['c1'],'c2_min_N':mins['c2'],
-                'lv_move':None,'risk':overall,'rated_kg':RATED_KG,'tension_max_N':80.}
+                'lv_move':None,'risk':overall,'rated_kg':RATED_KG,'tension_max_N':TENSION_MAX_N}
 
     @staticmethod
     def fmt(value, digits=2):
@@ -1701,7 +1852,9 @@ class Twin:
         self.labels['imu'].text=(f"IMU 가속(G) 앞뒤 {fmt(f.get('imu1_ax_G'))} · 좌우 {fmt(f.get('imu1_ay_G'))} · 상하 {fmt(f.get('imu1_az_G'))}  회전 {fmt(f.get('imu1_gz_dps'),1)} 도/초\n"
                                  f"기울기 롤 {fmt(f.get('imu1_roll_deg'),1)} · 피치 {fmt(f.get('imu1_pitch_deg'),1)} 도")
         kmh=self.velocity*3.6
-        self.labels['motion'].text=(f"트럭 {kmh:.1f} km/h  순환로 {self.s:.0f}/{self.road.length:.0f} m  차선 {self.d:+.1f} m  방향 {self.psi:+.0f} 도\n"
+        where=(f"방향 {self.yaw:+.0f} 도  순환로 기준 {self.s:.0f}/{self.road.length:.0f} m, 중심선에서 {self.d:+.1f} m"
+               +("\n포장 끝 - 좌회전 / 우회전으로 방향을 바꾸면 다시 출발" if self.edge_stop else ""))
+        self.labels['motion'].text=(f"트럭 {kmh:.1f} km/h  {where}\n"
                                     f"차체 롤 {self.body_roll:+.1f} · 피치 {self.body_pitch:+.1f} 도")
         st=None
         live_frame=self.live.latest()[0] if self.live_on and self.mode==0 else None
@@ -1719,24 +1872,42 @@ class Twin:
             text=(text+' | ' if text else '')+f"{level_ko(level_of(f.get('lv_move')))} 화물 이동: {f.get('shift_reason_ko') or f['shift_reason']}"
         self.labels['warning'].text=text if text else ('모든 값이 정상 범위' if risk==0 else '')
         self._setting_time=True;self.models['time'].set_value(self.t);self._setting_time=False
+        # Real D435i pictures: the live frame, or the recording's frame at the replay time. The depth preview shows
+        # the real depth whenever there is a real frame, the simulated camera's otherwise (physics mode).
+        real=None
         if live_frame is not None:
+            real=('live',self.live_count)
             if self.live_count!=self.cam_shown:
                 self.cam_shown=self.live_count
                 img=cv2.imdecode(np.frombuffer(live_frame['jpeg'],np.uint8),cv2.IMREAD_COLOR)
                 if img is not None:
                     self.upload(self.cam_image,cv2.cvtColor(img,cv2.COLOR_BGR2RGBA))
-        elif self.mode==0:
+                self.upload(self.depth_image,self.depth_rgba(live_frame['depth']))
+        elif self.mode==0 and not self.live_on:
             cache=self.caches.get(self.cases[self.index]['id'])
-            if cache and self.surface_index>=0 and self.surface_index!=self.cam_shown:
-                self.cam_shown=self.surface_index
-                img=cv2.imdecode(np.frombuffer(jpeg_bytes(cache,self.surface_index),np.uint8),cv2.IMREAD_COLOR)
-                if img is not None:
-                    self.upload(self.cam_image,cv2.cvtColor(img,cv2.COLOR_BGR2RGBA))
+            if cache and self.surface_index>=0:
+                real=('recording',self.surface_index)
+                if self.surface_index!=self.cam_shown:
+                    self.cam_shown=self.surface_index
+                    img=cv2.imdecode(np.frombuffer(jpeg_bytes(cache,self.surface_index),np.uint8),cv2.IMREAD_COLOR)
+                    if img is not None:
+                        self.upload(self.cam_image,cv2.cvtColor(img,cv2.COLOR_BGR2RGBA))
+                    self.upload(self.depth_image,self.depth_rgba(cache['depth'][self.surface_index]))
+        self.real_depth=real is not None
         depth=self.camera.get_current_frame().get('distance_to_image_plane')
         if depth is not None and np.asarray(depth).size:
             depth=np.asarray(depth);self.last_depth=depth
-            gray=np.uint8(np.clip(np.nan_to_num(depth,nan=0,posinf=3)/3,0,1)*255)
-            self.upload(self.depth_image,cv2.cvtColor(cv2.applyColorMap(gray,cv2.COLORMAP_TURBO),cv2.COLOR_BGR2RGBA))
+            if not self.real_depth:
+                gray=np.uint8(np.clip(np.nan_to_num(depth,nan=0,posinf=3)/3,0,1)*255)
+                self.upload(self.depth_image,cv2.cvtColor(cv2.applyColorMap(gray,cv2.COLORMAP_TURBO),cv2.COLOR_BGR2RGBA))
+        self.labels['cam_title'].text=('실시간 컬러 영상 (센서 파이)' if real and real[0]=='live' else
+                                       '기록된 컬러 영상 (센서와 같은 시각)')
+        self.labels['depth_title'].text=('D435i 깊이 영상 (빨강 = 가까움, 파랑 = 멂)' if self.real_depth else '시뮬레이션 깊이 영상 (m)')
+        if getattr(self,'d435i_frame',None) is not None:
+            self.d435i_frame.visible=self.camera_view==self.DEPTH_VIEW and self.real_depth
+            if real:
+                self.labels['d435i_title'].text=('D435i 실시간 화면 (센서 파이)' if real[0]=='live' else
+                                                 f'D435i 기록 화면 ({self.cases[self.index]["title"]}, {self.t:.1f}초)')
         case=self.cases[self.index]
         if self.live_on and self.mode==0:
             self.labels['status'].text=f"실시간 (센서 파이) | {self.t:.1f}초\n{status_ko(self.last_export)}"
@@ -1912,8 +2083,19 @@ class Twin:
             self.go()
         elif action=='brake':
             self.brake()
-        elif action in ('turn_left','turn_right','straight'):
-            self.models['steer'].set_value({'turn_left':25,'turn_right':-25,'straight':0}[action])
+        elif action in ('turn_left','turn_right'):
+            return self.turn((90. if action=='turn_left' else -90.) if value is None else abs(float(value))*(1 if action=='turn_left' else -1))
+        elif action=='turn':
+            return self.turn(float(value or 0.))
+        elif action=='straight':
+            return self.straight()
+        elif action=='select':
+            # what a viewport click would do: only the cargo stays selected (guard_selection)
+            # (no value: just report the current selection; the guard runs on the next frame)
+            sel=omni.usd.get_context().get_selection()
+            if value is not None:
+                sel.set_selected_prim_paths([str(p) for p in (value if isinstance(value,(list,tuple)) else [value]) if p],True)
+            return {'ok':True,'selected':list(sel.get_selected_prim_paths())}
         elif action=='set':
             key=str(name or '')
             if key in self.ranges:
@@ -2005,7 +2187,8 @@ class Twin:
                                               'title_ko':case['title'],'duration_s':case['duration']},
                 'replay_time_s':round(self.t,2),
                 'vehicle':{'speed_kmh':round(self.velocity*3.6,1),'lap_m':round(float(self.s),1),'lap_length_m':round(self.road.length,1),
-                           'lane_m':round(float(self.d),2),'heading_deg':round(float(self.yaw),1),'steer_dps':self.value('steer')},
+                           'lane_m':round(float(self.d),2),'heading_deg':round(float(self.yaw),1),'steer_dps':self.value('steer'),
+                           'driving':'manual','turning':self.turn_target is not None,'edge_stop':bool(self.edge_stop)},
                 'judgement':{'overall':name('risk'),'load':name('lv_load'),'cog':name('lv_cog'),'cargo_shift':name('lv_move'),
                              'belt_front_c1':name('lv_c1'),'belt_rear_c2':name('lv_c2'),
                              'levels':{k:lv(k) for k in ('risk','lv_load','lv_cog','lv_move','lv_c1','lv_c2')},
@@ -2019,7 +2202,7 @@ class Twin:
                 'recording':{'active':r is not None,'name':r['dir'].name if r else None,'rows':r['rows'] if r else None,
                              'seconds':round(time.time()-r['start'],1) if r else None},
                 'last_recording':self.last_recording.name if self.last_recording else None,
-                'display':self.display.status,'live':{'on':self.live_on,'status':self.live.status(),'frames':self.live_count},
+                'stream':getattr(self,'stream_qos',None),'display':self.display.status,'live':{'on':self.live_on,'status':self.live.status(),'frames':self.live_count},
                 'view':self.VIEWS[self.camera_view],'fps':round(self.fps,1),
                 'render_quality':getattr(self,'quality',None),
                 'status':self.last_export}
