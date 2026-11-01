@@ -295,6 +295,104 @@ The older `Start-IsaacTwin.bat` and original scripts are preserved.
   off restarts the recording at 0 s; recorder rows say mode 'live'. cargo_boxes falls back to ../display/twin/server
   inside the team repo when team_display/ was not synced.
 
+- High-quality remote view (2026-11-01, user: "show the judges, quality matters"): the stock stream page
+  (/streaming/webrtc-demo/) posts its 1280x720 video size to /streaming/initialize-webrtc-stream, which resizes the Kit
+  window to 1280x720, and the player then caps the bitrate from that size (w x h x fps x .256/1200 kbps: ~7-12 Mbps).
+  New page /twin/view (twin_api.VIEW_HTML, same kit-player.js) asks for 1920x1080 and maxbitrate 40000 kbps (query
+  params resolution / maxbitrate override; the player's QoS still lowers it on a slow link), keeps the video element
+  at the stream's aspect so mouse input maps 1:1, and has a full-screen button. Share mode opens the window at 1920x1080
+  and SHARE_URL points to the new page. /twin/state 'stream' shows the encoder's size / bitrate / fps / RTT from the
+  livestream QoS callback while a viewer is connected. Twin ~26 FPS at 1080p (balanced quality).
+  First version hung at '연결 중' (user report): kit-player.js hides #overlay (missing -> TypeError) and starts its
+  worker from ./js/ragnarokworker.js (404 under /twin/); the page now has #overlay and /twin/js/<file> serves the
+  streamclient's js folder. Checked in the built-in browser up to the WebSocket (that pane cannot open ws:// to LAN;
+  the stream port answers the handshake with 101).
+  Real cause of the soft picture (user: "not as sharp as my screen"): while a viewer is connected Kit holds the window
+  at the renderer resolution, which share mode set to 1280x720, so the 1080p stream was an upscale of an 839x634
+  viewport (31 Mbps were wasted on it). Share mode now sets window = renderer = --stream-res (default 1920x1080, env
+  TWIN_STREAM_RES; Start-ForestTwin-Share-1440.bat = 2560x1440) and /twin/view defaults to that size (60 Mbps cap above
+  2000 px). At 2560x1440 the viewport renders 1722x1335; twin FPS balanced 17 / fast (DLSS) 28.8 / high 8.2.
+  The stream QoS reports qos_bitrate in kbps (31000 at ~31 Mbps).
+  Stutter fix (user: 1440p 'crackles', 1080p still buffers a little): back to 1080p; /twin/view caps are now
+  20 Mbps (1080p) / 30 Mbps (1440p) instead of 40/60 - the viewer (direct Tailscale path, ~36 ms) got bursts beyond
+  the link; Start-ForestTwin-Share.bat starts in fast quality (~35 FPS at 1080p instead of ~25), so frames come evenly.
+
+- Turn at once on a paved test area (2026-11-01, user: "a left turn has to wait until the road bends - redo the road
+  so we can turn right away"). The truck used to live in Frenet coordinates on the loop (relative heading clamped to
+  +-30 deg, lane keeping), so it could only follow the road's own corners. Now:
+  - road_path: plain rounded-rectangle loop (S-bend dropped, interior convex), APRON = 40 m, PAVED_OUT, Road.project.
+  - forest_scene: interior paved (triangle fan, PadAsphaltPBR tint .5) + 40 m outer apron ribbon, apron edge line,
+    30 m turning circle; inner shoulder / guardrail / posts / tree rows / cover removed, outer ones moved out by
+    the apron; terrain uses paved_distance (0 on the pad).
+  - run_forest_twin: free world pose (xy, yaw). Commanded turning = steer slider + 90 deg turn manoeuvre (buttons
+    좌회전 / 우회전, API turn_left / turn_right [value = deg] / turn [+left deg] / straight; rate max(18 deg/s, v/12 m),
+    lead .6 x filtered rate against overshoot) + in live mode the Pi's imu1_gz_dps (bias tracked while quiet,
+    > 6 deg/s counts, +-45 deg/s cap). Any command -> 'free' (straight on afterwards). Autopilot: back onto the
+    loop (lane keeping either way round, dir by the closer direction, pull capped max(18, v/14 m) deg/s) when
+    leaving the loop outwards, after 2 s lined up with it, or within 14 m of the apron edge (which also
+    overrides commands); hard clamp 2 m inside the apron edge. Replay keeps the old ring behaviour (recorded
+    yaw x turn_gain with the +-30 deg fade). /twin/state vehicle has driving (free / loop_ccw / loop_cw) and turning.
+  Tested through the API at 20 km/h: left turn 0 -> +88 deg in ~6 s, across the pad, rejoined on the far side and
+  settled in the right lane (+-0.3 m); right turn -> swung round on the apron (34 m out of 45) and rejoined
+  clockwise; live mode on: gyro noise did not steer.
+- Nature in every chase view (2026-11-01, user: "an angle that always shows nature"): with the paved area the old
+  36-40 deg views showed only grey pad. PRESETS now ~20 deg up (Front .72/.66/.40, Rear -.82/.5/.42, Side
+  .05/.95/.30) and look_target() raises the aim point so the camera tilts only HORIZON_PITCH = 13 deg down: the
+  tree line and sky fill the top ~40 % of the picture, truck and cargo stay whole. Top-down (위) and cab unchanged.
+- Fully manual driving (2026-11-01, user: "after 좌회전 / 우회전 it still follows the lane and turns on its own -
+  the truck must move only as I control it"): lane keeping, the free / loop modes and the automatic rejoin are gone.
+  Heading changes only from the steer slider, the 90 deg turn (buttons / API), the live rig's gyro and the replay
+  yaw x turn_gain, whose default is now 0. At the paved edge the speed is capped to sqrt(2 x 3 m/s^2 x room) while
+  heading outwards (room = distance along the heading to 2 m inside the edge, minus 3 m), so it stops there
+  (vehicle.edge_stop, panel hint); it can turn on the spot (>= 18 deg/s) and drives on once it faces away.
+  Turns now finish on the exact heading (|left| < .3 deg and rate < 1 deg/s; the lead-corrected end stopped
+  ~1.6 deg short, enough to drift back into the edge). /twin/state vehicle.driving = 'manual'.
+  Tested via the API: heading stayed at 0.0 / 88.5 between commands (live on), turns 0 -> 89.7, 89.9 -> 0.2,
+  0 -> -89.7; at 20 km/h straight at the edge it braked 20 -> 0 km/h and stopped 2 m inside; a left turn there
+  pivoted and drove off.
+- Belt tension upper limit 300 N in the twin (2026-11-01, user request; team default TENSION_MAX 80 N):
+  team_judge.TWIN_ENV sets TENSION_MAX=300 before team/acquisition/env.sh is read (survives re-syncs; an
+  environment variable still wins), run_forest_twin.TENSION_MAX_N = 300 for the fallback judge and the belt
+  pretension sliders (0-300 N, were 0-98). The Pi's own judgement (recorded / live 'recorded_judgement') keeps
+  the Pi's setting.
+- 깊이 카메라 view = the real D435i (2026-11-01, user: "make the depth camera view the D435i's picture"): a viewport
+  frame 'twin_d435i' (add_d435i_view, drawn under the logos) shows the real colour JPEG and the real depth side by
+  side - the live frame while live, else the recording's frame at the replay time. Depth colours: turbo over the
+  frame's own 2-98 % range (min span 150 mm; a fixed 250-900 or 300-620 mm scale left the cargo all red because the
+  tilted camera sees 250-900 mm across the picture), red near / blue far, no reading black. Visible only in that view
+  and when there is a real frame (physics mode / live without frames: the simulated camera as before). The panel's
+  D435i previews follow (titles say live / recorded; depth = real depth when available).
+- Bigger test area (2026-11-01, user: "more room, it is too cramped"): road_path LOOP_LENGTH x LOOP_WIDTH x
+  LOOP_RADIUS = 400 x 260 x 60 m (was 200 x 120 x 40; lap 571 -> 1217 m), paved area ~494 x 354 m with the 40 m
+  apron. start_s / corner_s computed from the size (curve signs 20 m before each corner), turning circle 40 m,
+  ground cover / rocks scaled with the lap length. Twin 36-49 FPS (fast), views still show the tree line.
+- Slope / bank follow the truck's heading (2026-11-01, user: with free driving the same 경사 slider gave uphill,
+  downhill or a sideways tilt depending on the direction): tilt_matrix() = Rz(tilt_yaw) Ry(-grade) Rx(bank)
+  Rz(-tilt_yaw), retilt() sets tilt_yaw = yaw; environment pose via euler_xyz(). Re-laid every 2.5 deg of heading
+  and once when the turn ends (every frame moved the whole environment and RTX rebuilt it: 41 -> 17 FPS while
+  turning; now 31-35). IMU rebias only when grade / bank change. Labels: '+ 진행 방향 오르막', '+ 오른쪽이 낮음'.
+  Physics-mode test: grade 10 -> cells front 7.75 / rear 10.06 kg at headings 0, 90, 180; bank 8 -> left 6.9 /
+  right 10.9 kg at headings 180, -90, 0.
+  REVERTED the same day at the user's request: slope / bank are again laid along the world axes (as before).
+- Camera zoom fix (2026-11-01, user: "views look odd when zoomed"): the chase views aimed at a point raised above
+  the truck (HORIZON_PITCH), so Kit's zoom / orbit went toward that empty point and the truck slid out of the
+  picture. They now aim at the truck's centre (Kit's centre of interest = the truck) and the sky / tree line comes
+  from a lens shift: /OmniverseKit_Persp verticalApertureOffset = focal x tan(LENS_SHIFT_DEG = 8) in the front / rear
+  / side views (0 from above and in the cab). Checked at distance 6, 16 and 30 m in front / rear / side.
+- Floor cannot be moved (2026-11-01, user: "the floor height can be adjusted - stop that"): there is no slider; a
+  viewport click selected the ground / road / plate / truck and the Move tool dragged it. guard_selection (stage
+  event SELECTION_CHANGED) now drops every selected path outside MOVABLE = ('/World/Cargo',), so only the cargo can
+  be picked and moved (the cargo drag feature is unchanged). API 'select' (value: path(s), none = report) does what
+  a click would; tested: PadInside / Terrain / RoadSurface / Cart dropped within a frame, /World/Cargo kept.
+- Driving review fixes (2026-11-02, PR #38 code review): turn_target is now the degrees still to turn (counted down,
+  unwrapped), so 180 / 270 / 360 deg turns go the right way; a turn's rate is capped at TURN_A_MAX = 2.5 m/s^2
+  sideways (60 km/h: ~7-9 deg/s instead of 80 deg/s = 2.4 G); with the steer slider / gyro / turn_gain also turning,
+  a turn ends once past the target or held still short of it (it used to stay 'turning' forever); reset and set_lane
+  clear the filtered turn rate (the placed truck yawed 11-48 deg); the gyro bias is relearned on live start / reset
+  and creeps (60 s) towards a lasting reading, so a bias caught while the rig was turned cannot make it circle; the
+  edge limit works in the travel direction (reversing too); a mode change re-uploads the real depth picture. Tested:
+  90 / 180 / -270 deg at 20 km/h end within 0.3 deg, 90 deg at 60 km/h peaks at ~2.1 m/s^2, turns with steer +-10 end.
+
 ## Realistic update - 2026-10-05
 
 - NVIDIA Omniverse assets were collected once into `assets/nvidia/` by `scripts/fetch_nvidia_assets.py`

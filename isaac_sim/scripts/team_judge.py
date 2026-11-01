@@ -22,8 +22,15 @@ def version():
         return None
 
 
+# Twin-only settings that win over team/acquisition/env.sh (an environment variable of the same name still wins).
+# TENSION_MAX: belt / tension-cell upper limit, 300 N in the twin (2026-11-01, user request; team default 80 N).
+TWIN_ENV = {'TENSION_MAX': '300'}
+
+
 def _load_env():
     """Pi wiring / bed geometry from team/acquisition/env.sh ('export KEY=VALUE' lines)."""
+    for key, value in TWIN_ENV.items():
+        os.environ.setdefault(key, value)
     for line in (TEAM / 'acquisition' / 'env.sh').read_text(encoding='utf-8').splitlines():
         line = line.strip()
         if line.startswith('export ') and '=' in line:

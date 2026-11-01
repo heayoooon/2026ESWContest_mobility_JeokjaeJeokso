@@ -1,7 +1,9 @@
 """Closed four-lane road loop: centreline sampled by arc length with heading and curvature.
 
-The loop is a rounded rectangle (200 x 120 m between centre-line extents, 40 m corner radius) whose top
-straight carries a gentle S-bend, about 560 m per lap, traversed counter-clockwise (interior on the +d side).
+The loop is a rounded rectangle (LOOP_LENGTH x LOOP_WIDTH between centre-line extents, LOOP_RADIUS corners; 400 x
+260 m, 60 m since 2026-11-01 - the user found 200 x 120 m too cramped to drive freely), about 1220 m per lap, traversed counter-clockwise (interior on the +d side). Since 2026-11-01 it runs round a paved test area: all of
+the interior and an APRON outside the loop are asphalt, so the truck can turn off the loop at any moment (the S-bend
+on the top straight was dropped so the interior stays convex and the apron ribbon cannot fold).
 Frenet coordinates: s = distance along the centreline (wraps), d = lateral offset (+ = left of travel).
 """
 import math
@@ -14,6 +16,9 @@ WIDTH = LANES * LANE_W          # 14 m of asphalt
 SHOULDER = 1.5
 RIGHT_LANE = -LANE_W * 1.5      # centre of the outer right lane (right-hand traffic)
 INNER_RIGHT_LANE = -LANE_W * .5
+LOOP_LENGTH, LOOP_WIDTH, LOOP_RADIUS = 400., 260., 60.
+APRON = 40.                     # paved strip outside the loop's outer edge (m): room to turn right off the loop
+PAVED_OUT = WIDTH / 2 + APRON   # paved half-width on the outer side of the centreline
 
 
 def _line(p0, p1, step):
@@ -28,7 +33,7 @@ def _arc(c, r, a0, a1, step):
     return np.column_stack([c[0] + r * np.cos(a), c[1] + r * np.sin(a)])
 
 
-def raw_centreline(length=200., width=120., radius=40., step=.5, wiggle=6.):
+def raw_centreline(length=LOOP_LENGTH, width=LOOP_WIDTH, radius=LOOP_RADIUS, step=.5, wiggle=0.):
     hx, hy, R = length / 2, width / 2, radius
     parts = [_line((-hx + R, -hy), (hx - R, -hy), step),
              _arc((hx - R, -hy + R), R, -np.pi / 2, 0, step),
@@ -62,7 +67,11 @@ class Road:
         k = np.gradient(np.concatenate([self.theta[-3:] - 2 * np.pi, self.theta, self.theta[:3] + 2 * np.pi]))[3:-3] / step
         self.kappa = np.convolve(np.pad(k, 8, mode='wrap'), np.ones(17) / 17, mode='same')[8:-8]
         self.step = step
-        self.start_s = (self.length * 0 + (200. - 80.) / 2) % self.length   # middle of the bottom straight
+        L, Wd, R = (kw.get(k, d) for k, d in (('length', LOOP_LENGTH), ('width', LOOP_WIDTH), ('radius', LOOP_RADIUS)))
+        self.start_s = (L - 2 * R) / 2                                         # middle of the bottom straight
+        arc = math.pi * R / 2                                                  # where each corner begins
+        self.corner_s = [L - 2 * R, L - 2 * R + arc + Wd - 2 * R, 2 * (L - 2 * R) + 2 * arc + Wd - 2 * R,
+                         2 * (L - 2 * R) + 3 * arc + 2 * (Wd - 2 * R)]
         self._coarse = np.column_stack([self.x, self.y])[::4]                  # for distance queries (2 m)
         self._coarse_theta = self.theta[::4]
 
@@ -83,6 +92,15 @@ class Road:
             th1 += 2 * np.pi
         return (self.x[i0] + (self.x[i1] - self.x[i0]) * u, self.y[i0] + (self.y[i1] - self.y[i0]) * u,
                 th0 + (th1 - th0) * u, self.kappa[i0] + (self.kappa[i1] - self.kappa[i0]) * u)
+
+    def project(self, x, y):
+        """World point -> (s, d, heading rad) of the nearest centreline point (d + = inside the loop)."""
+        j = int(np.argmin((self._coarse[:, 0] - x) ** 2 + (self._coarse[:, 1] - y) ** 2))
+        idx = np.arange(4 * j - 6, 4 * j + 7) % len(self.s)
+        k = int(idx[np.argmin((self.x[idx] - x) ** 2 + (self.y[idx] - y) ** 2)])
+        th = float(self.theta[k])
+        dx, dy = x - self.x[k], y - self.y[k]
+        return (float(self.s[k]) + math.cos(th) * dx + math.sin(th) * dy) % self.length, -math.sin(th) * dx + math.cos(th) * dy, th
 
     def frenet_to_xy(self, s, d):
         x, y, th, _ = self.pose(s)
