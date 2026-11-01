@@ -713,16 +713,18 @@ class Twin:
         self.dir=1 if abs(self.psi)<=90 else -1
         xy,heading=self.road.frenet_to_xy(self.s,self.dir*value)
         self.xy=np.array(xy);self.yaw=math.degrees(heading)+(0. if self.dir>0 else 180.)
-        self.turn_target=None
+        self.turn_target=None;self.yaw_rate_f=0.
         self.update_pose()
         self.place_cargo()
 
     TURN_RATE=18.     # deg/s of a turn: 90 deg in ~5 s, about how a loaded truck takes a junction
+    TURN_A_MAX=2.5    # m/s^2: at speed a turn is no tighter than this lateral acceleration (60 km/h -> ~9 deg/s)
 
     def turn(self,degrees):
         """Turn left (+) / right (-) by that many degrees, starting now, then drive straight on."""
         self.models['steer'].set_value(0)
-        self.turn_target=self.yaw+float(degrees)
+        self.turn_target=float(degrees)          # degrees still to turn, counted down as the heading changes
+        self.turn_sign=1. if self.turn_target>=0 else -1.
         return {'ok':True,'message':f'turning {float(degrees):+.0f} deg'}
 
     def straight(self):
@@ -762,7 +764,7 @@ class Twin:
     def apply_mode(self,mode):
         if mode!=0 and self.live_on:
             self.set_live(False)
-        self.mode=mode;self.reset_requested=True
+        self.mode=mode;self.reset_requested=True;self.cam_shown=-1
         algo=self.team.algo if self.team else '트윈 규칙 (team/ 동기화 안 됨)'
         self.labels['mode'].text=(f'측정 재생 - 판정: {algo}' if mode==0 else f'물리 실험 (PhysX) - 판정: {algo}')
         self.labels['source'].text=('기록된 센서값을 그대로 재생. 트럭 움직임은 기록된 IMU를 따름 (회전은 비율만큼).' if mode==0 else
@@ -945,7 +947,7 @@ class Twin:
             self.team_live.reset();self.team_t=-1.;self.team_out={};self.team_clock=0.
         self.t=0.;self.distance=0.;self.velocity=0.
         self.s=self.road.start_s;self.d=self.value('lateral');self.psi=0.
-        self.dir=1;self.turn_target=None
+        self.dir=1;self.turn_target=None;self.yaw_rate_f=0.;self.gz_bias=None
         xy,heading=self.road.frenet_to_xy(self.s,self.d)
         self.xy=np.array(xy);self.yaw=math.degrees(heading)
         self.update_pose();self.heading_prev=self.yaw
@@ -1365,44 +1367,58 @@ class Twin:
         # is raised, the recording's yaw. At the paved area's outer edge the truck slows and stops instead of
         # steering itself; turning away (it can turn on the spot) lets it drive on.
         command=self.value('steer') if not replay_imu else 0.
-        if self.turn_target is not None:
-            # minus what the 0.6 s steering lag below still adds once the command drops (8 deg overshoot without)
-            left=(self.turn_target-self.yaw+540.)%360.-180.
-            err=left-.6*getattr(self,'yaw_rate_f',0.)
-            rate=max(self.TURN_RATE,math.degrees(self.velocity/12.))     # about a 12 m radius, like a junction
-            command+=max(-rate,min(rate,1.5*err))
-            # finish on the exact heading (ending on the lead-corrected error stopped ~1.6 deg short)
-            if abs(left)<.3 and abs(getattr(self,'yaw_rate_f',0.))<1.:
-                self.turn_target=None
         if live:
             gz=f.get('imu1_gz_dps')
             if isinstance(gz,(int,float)):
-                # bias follows the gyro while it is quiet; > 6 deg/s above it is a real turn (gz + = left)
+                # bias follows the gyro while it is quiet; > 6 deg/s above it is a real turn (gz + = left). It
+                # also creeps towards a lasting reading (60 s), so a bias first caught while the rig was being
+                # turned does not make the truck circle for good.
                 if self.gz_bias is None:
                     self.gz_bias=float(gz)
-                elif abs(gz-self.gz_bias)<4.:
-                    self.gz_bias+=(gz-self.gz_bias)*min(1.,dt/5.)
+                else:
+                    self.gz_bias+=(gz-self.gz_bias)*min(1.,dt/(5. if abs(gz-self.gz_bias)<4. else 60.))
                 w=gz-self.gz_bias
                 if abs(w)>6.:
                     command+=max(-45.,min(45.,w))
+        if self.turn_target is not None:
+            other=command+yaw_rate                # what else turns the truck (steer slider, gyro, turn_gain)
+            yrf=getattr(self,'yaw_rate_f',0.)
+            left=self.turn_target
+            # minus what the 0.6 s steering lag below still adds once the command drops (8 deg overshoot without)
+            err=left-.6*(yrf+yaw_rate)
+            # about a 12 m radius like a junction, but no more than TURN_A_MAX sideways at speed
+            v=abs(self.velocity)
+            rate=min(max(self.TURN_RATE,math.degrees(v/12.)),math.degrees(self.TURN_A_MAX/max(v,.1)))
+            push=max(-rate,min(rate,1.5*err))
+            command+=push
+            # finish on the exact heading (ending on the lead-corrected error stopped ~1.6 deg short); with other
+            # inputs turning too, finish once past the target or once they hold the truck still short of it
+            if abs(left)<.3 and abs(yrf+yaw_rate)<1.:
+                self.turn_target=None
+            elif abs(other)>.5 and (left*self.turn_sign<=0. or
+                                    (abs(yrf+yaw_rate)<1. and abs(push)<rate)):
+                self.turn_target=None
         # Steering takes time on a real truck: the commanded turn rate is reached over ~0.6 s. A step
         # (Turn left / Straight buttons) yawed the deck instantly and the strapped cargo slid 20-35 mm.
         k=min(1.,active_dt/.6) if active_dt else 0.
         self.yaw_rate_f=getattr(self,'yaw_rate_f',0.)+(command-getattr(self,'yaw_rate_f',0.))*k
         heading_rate=self.yaw_rate_f+yaw_rate
         self.yaw=(self.yaw+heading_rate*active_dt+180.)%360.-180.
+        if self.turn_target is not None:
+            self.turn_target-=heading_rate*active_dt
         # Edge of the paved area (the guardrail is 1.5 m beyond it): limit the speed so the truck can still stop
         # before it (3 m/s^2) while it heads outwards.
         self.update_pose()
         _,_,th,_=self.road.pose(self.s)
-        outward=math.sin(th)*math.cos(math.radians(self.yaw))-math.cos(th)*math.sin(math.radians(self.yaw))
+        travel=1. if self.velocity>=0. else -1.
+        outward=travel*(math.sin(th)*math.cos(math.radians(self.yaw))-math.cos(th)*math.sin(math.radians(self.yaw)))
         limit=road_path.PAVED_OUT-(2. if TRUCK else 1.)
         self.edge_stop=False
         if outward>.02:
-            room=max(0.,(limit+self.d)/outward-3.)          # metres along the heading to the edge, 3 m spare
+            room=max(0.,(limit+self.d)/outward-3.)          # metres along the travel to the edge, 3 m spare
             v_max=math.sqrt(2*3.*room)
-            if self.velocity>v_max:
-                self.velocity=v_max;self.edge_stop=v_max<.3
+            if abs(self.velocity)>v_max:
+                self.velocity=travel*v_max;self.edge_stop=v_max<.3
                 a_fwd=(self.velocity-self.previous_velocity)/dt if active_dt else 0.
         step=self.velocity*active_dt
         nxt=self.xy+step*np.array([math.cos(math.radians(self.yaw)),math.sin(math.radians(self.yaw))])
@@ -1553,7 +1569,7 @@ class Twin:
             if not ok:
                 self.last_export=f'Live: {message}'
                 return {'ok':False,'error':message}
-            self.live_on=True;self.live_count=0;self.live_cam=None;self.live_ts=None
+            self.live_on=True;self.live_count=0;self.live_cam=None;self.live_ts=None;self.gz_bias=None
             if self.mode!=0:
                 self.set_mode(0)
             self.clear_cargo_view()          # nothing of the replay stays on the plate until the first live frame
