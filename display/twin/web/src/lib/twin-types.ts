@@ -54,6 +54,7 @@ export type TwinSensors = {
   yaw_rate: number | null
   ax: number | null
   ay: number | null
+  az?: number | null
   /** 센서 값이 카메라 프레임보다 얼마나 오래됐나 (s) */
   age_s: number | null
   /** 2026-10-04 부터 (센서 파이 analysis/): 적재 kg 와 최대 적재 kg */
@@ -76,7 +77,8 @@ export type TwinSensors = {
   tension_max_n?: number
 }
 
-export type TwinBelt = { key: 'c1' | 'c2' | string; name: string; n: number | null; min_n: number | null; level: RiskLevel | null }
+/** k = 벨트 누름 계수 (장력 1 N 이 화물을 누르는 힘 N), x_mm · y_mm = 누름 자리. 센서 파이 analysis/belt_fit.py */
+export type TwinBelt = { key: 'c1' | 'c2' | string; name: string; n: number | null; k?: number | null; x_mm?: number | null; y_mm?: number | null; min_n: number | null; level: RiskLevel | null }
 
 /** 0 = 정상, 1 = 주의, 2 = 경고, 3 = 위험 (센서 파이 analysis/risk.py, 2026-10-08 부터 4단계).
  *  옛 3단계 녹화(정상 · 주의 · 위험)는 서버가 위험을 3 으로 바꿔 보낸다 */

@@ -59,6 +59,7 @@ except ImportError:
 scene_v2.styled = lambda *a, **k: []
 
 log = logging.getLogger('twin')
+elog = logging.getLogger('twin.err')      # 오류 · 복구 (Health): server.log 와 errors.log 둘 다에 남는다
 
 
 def setup_log():
@@ -70,7 +71,73 @@ def setup_log():
     s = logging.StreamHandler(sys.stdout)
     s.setFormatter(logging.Formatter('%(asctime)s %(message)s', '%H:%M:%S'))
     log.addHandler(s)
+    # 디버깅용 오류 기록: 경고 · 오류 · 예외(traceback) + Health 의 나빠짐 · 회복만 (1 MB x 5)
+    e = logging.handlers.RotatingFileHandler(os.path.join(LOG_DIR, 'errors.log'), maxBytes=1 << 20, backupCount=5,
+                                             encoding='utf-8')
+    e.setFormatter(logging.Formatter('%(asctime)s.%(msecs)03d %(levelname)-7s %(message)s', '%Y-%m-%d %H:%M:%S'))
+    e.addFilter(lambda r: r.levelno >= logging.WARNING or r.name == 'twin.err')
+    log.addHandler(e)
     log.setLevel(logging.INFO)
+
+    def hook(t, v, tb):
+        if not issubclass(t, KeyboardInterrupt):
+            log.critical('잡히지 않은 예외로 끝남', exc_info=(t, v, tb))
+        sys.__excepthook__(t, v, tb)
+    sys.excepthook = hook
+    threading.excepthook = lambda a: log.critical('스레드 %s 예외', a.thread.name if a.thread else '?',
+                                                  exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+    elog.info('서버 시작 (pid %d)', os.getpid())
+
+
+class Health:
+    """들어오는 프레임을 보고 문제가 생기거나 풀릴 때만 errors.log 에 한 줄 (같은 문제는 되풀이하지 않는다).
+    센서 값 없음 · 센서 값 늦음 · IMU 값 없음 / 멈춤 · 로드셀 값 없음 · 프레임 끊김 · 송신기 다시 켜짐."""
+    FROZEN_S = 3.0               # IMU 값이 이만큼 똑같으면 멈춘 것 (살아 있는 센서는 잡음으로 늘 조금씩 바뀐다)
+    GAP_S = 1.0                  # 프레임 사이가 이만큼 넘으면 끊김
+
+    def __init__(self):
+        self.bad = {}
+        self.imu_last, self.imu_t = None, 0.0
+        self.last_recv = None
+
+    def set(self, key, bad, text, ok_text):
+        since = self.bad.get(key)
+        if bad and since is None:
+            self.bad[key] = time.monotonic()
+            elog.warning(text() if callable(text) else text)
+        elif not bad and since is not None:
+            del self.bad[key]
+            elog.info('%s (%.1f 초 만에)', ok_text, time.monotonic() - since)
+
+    def check(self, f, sess, prev_sess):
+        hdr, now = f['hdr'], f['recv_t']
+        if prev_sess is not None and sess != prev_sess:
+            elog.info('센서 파이 송신기가 새로 켜졌다 (세션 %s -> %s)', prev_sess, sess)
+        if self.last_recv is not None and now - self.last_recv > self.GAP_S:
+            elog.warning('프레임이 %.1f 초 끊겼다가 다시 옴 (센서 파이 송신 · 네트워크)', now - self.last_recv)
+        self.last_recv = now
+        s = hdr.get('sensors')
+        self.set('sensors', s is None, '센서 값 없이 카메라 프레임만 온다 (센서 파이 sensor_feed 가 꺼졌거나 멈춤)',
+                 '센서 값 다시 들어옴')
+        if s is None:
+            return
+        age = hdr.get('sensor_age') or 0.0
+        self.set('age', age > 1.0, lambda: '센서 값이 카메라보다 %.1f 초 늦다 (sensor_feed 가 밀림)' % age, '센서 값 늦음 풀림')
+        imu = tuple(s.get('imu1_' + k) for k in ('roll_deg', 'pitch_deg', 'az_G', 'gz_dps'))
+        self.set('imu', imu[0] is None, 'IMU1 값 없음 (센서 파이가 못 읽음: SDA 물리 3 · SCL 물리 5 · 전원선, 또는 절전)',
+                 'IMU1 값 다시 들어옴')
+        if imu[0] is None:
+            self.imu_last = None
+        else:
+            if imu != self.imu_last:
+                self.imu_last, self.imu_t = imu, now
+            self.set('imu_frozen', now - self.imu_t > self.FROZEN_S,
+                     lambda: 'IMU1 값이 %.0f 초째 똑같다 (roll %s pitch %s az %s) -> 칩 절전 · 선' % (
+                         self.FROZEN_S, imu[0], imu[1], imu[2]), 'IMU1 값 다시 움직임')
+        miss = [k for k in ('NW', 'NE', 'SW', 'SE') if s.get(k + '_g') is None]
+        self.set('loads', bool(miss), lambda: '로드셀 값 없음: %s (센서 파이 HX711 · 보정)' % ', '.join(miss), '로드셀 값 다시 들어옴')
+        tmiss = [k for k in ('c1', 'c2') if s.get(k + '_N') is None]
+        self.set('tension', bool(tmiss), lambda: '장력 값 없음: %s (앞 c1 · 뒤 c2 HX711)' % ', '.join(tmiss), '장력 값 다시 들어옴')
 
 
 # ---------------------------------------------------------------- JSON 도우미
@@ -121,34 +188,50 @@ def box_json(b):
                 kind=b.get('kind') if b.get('kind') in ('side', 'item', 'bottle') else 'box')
 
 
+def weight(v, nd=None):
+    """무게 하나. 0 이하(빈 판 영점 흔들림)는 화면에 0 으로."""
+    f = num(v, nd)
+    return None if f is None else max(0.0, f)
+
+
+BELT_ZERO_N = {'c1': .2}          # 벨트를 안 걸어도 읽히는 값 (앞 벨트 0.2 N)
+
+
+def belt_n(s, key, nd=2):
+    """벨트 장력 화면 값 (N): 영점을 빼고 0 아래는 0. 판정은 센서 파이에서 원본으로 한다."""
+    v = num(s.get(key + '_N'), 6)
+    return None if v is None else round(max(0.0, v - BELT_ZERO_N.get(key, 0.0)), nd)
+
+
 def sensors_json(s, age):
     """원본 이름(SW_g ... imu1_*) -> TwinSensors. 센서가 없는 프레임(None)이면 전부 None."""
     s = s or {}
     cx, cy = num(s.get('cog_x_pct'), 2), num(s.get('cog_y_pct'), 2)
     flags = s.get('flags') or ''
-    return dict(total_g=num(s.get('total_g'), 1),
-                loads=dict(NW=num(s.get('NW_g'), 1), NE=num(s.get('NE_g'), 1),
-                           SW=num(s.get('SW_g'), 1), SE=num(s.get('SE_g'), 1)),
+    return dict(total_g=weight(s.get('total_g'), 1),
+                loads=dict(NW=weight(s.get('NW_g'), 1), NE=weight(s.get('NE_g'), 1),
+                           SW=weight(s.get('SW_g'), 1), SE=weight(s.get('SE_g'), 1)),
                 cog=dict(x_pct=cx, y_pct=cy) if cx is not None and cy is not None else None,
-                tension_n=num(s.get('c1_N'), 3),
+                tension_n=belt_n(s, 'c1', 3),
                 tension_stuck='stuck' in str(flags),
                 roll=num(s.get('imu1_roll_deg'), 2), pitch=num(s.get('imu1_pitch_deg'), 2),
                 yaw_rate=num(s.get('imu1_gz_dps'), 2),
-                ax=num(s.get('imu1_ax_G'), 4), ay=num(s.get('imu1_ay_G'), 4),
+                ax=num(s.get('imu1_ax_G'), 4), ay=num(s.get('imu1_ay_G'), 4), az=num(s.get('imu1_az_G'), 4),
                 age_s=num(age, 3),
                 # 2026-10-04 부터 (센서 파이 analysis/): 뒤 벨트 c2, 벨트별 필요 장력, mm 무게중심, 적재 kg
-                load_kg=num(s.get('load_kg'), 3) if s.get('load_kg') is not None else num((s.get('total_g') or 0) / 1000, 3) if s.get('total_g') is not None else None,
+                load_kg=weight(s.get('load_kg'), 3) if s.get('load_kg') is not None else weight((s.get('total_g') or 0) / 1000, 3) if s.get('total_g') is not None else None,
                 max_kg=num(s.get('rated_kg')) or MAX_KG,
                 # 2026-10-08 판정 (팀 analysis/total.py): 적정 적재중량과 주의 · 경고 · 위험 % , 셀 합 그대로의 무게
                 rated_kg=num(s.get('rated_kg')),
                 load_pct=s.get('load_pct'),
-                measured_kg=num(s.get('measured_kg'), 3),
+                measured_kg=weight(s.get('measured_kg'), 3),
                 tension_max_n=num(s.get('tension_max_N')),
                 bed_mm=dict(l=BED_L_MM, w=BED_W_MM),
                 cog_mm=dict(x=num(s.get('cog_x_mm'), 1), y=num(s.get('cog_y_mm'), 1)) if s.get('cog_x_mm') is not None else None,
                 cog_static_mm=dict(x=num(s.get('cog_static_x_mm'), 1), y=num(s.get('cog_static_y_mm'), 1)) if s.get('cog_static_x_mm') is not None else None,
                 cog_pred_mm=dict(x=num(s.get('cog_pred_x_mm'), 1), y=num(s.get('cog_pred_y_mm'), 1)) if s.get('cog_pred_x_mm') is not None else None,
-                belts=[dict(key=k, name=nm, n=num(s.get(k + '_N'), 2), min_n=num(s.get(k + '_min_N'), 2),
+                belts=[dict(key=k, name=nm, n=belt_n(s, k), min_n=num(s.get(k + '_min_N'), 2),
+                            k=num(s.get(k + '_k'), 3), x_mm=num(s.get(k + '_px_mm'), 1), y_mm=num(s.get(k + '_py_mm'), 1),   # 벨트 누름 계수 · 자리 (analysis/belt_fit.py)
                             level=level4(s, s.get('lv_' + k)))
                        for k, nm in (('c1', '앞 벨트'), ('c2', '뒤 벨트')) if k == 'c1' or s.get(k + '_N') is not None])
 
@@ -546,7 +629,8 @@ class Twin:
         self.rx = Receiver(port, 'tcp')
         self.rx.start()
         self.mesh, self.alerts = tv.StableBoxMesh(), tv.Alerts()
-        self.layers = StackLayers()    # 쌓인 화물을 층(상자)별로 + 옆 짐
+        # 쌓인 화물을 층(상자)별로 + 옆 짐. 실제 수신 포트만 물건 기억을 파일에 둔다 (다시 켜도 안 잊는다)
+        self.layers = StackLayers(os.path.join(LOG_DIR, 'objects.json') if port == 5010 else None)
         self.boxes, self.base = [], 0.0
         self.reg = Registration()
         self.voice = hud_v3.Voice()
@@ -565,6 +649,7 @@ class Twin:
         self.resume_t = 0.0            # 일시정지를 푼 시각 (오래 멈췄다 풀어도 바로 '연결 끊김'으로 보지 않게)
         self.mode_local = 'drive'      # 센서 파이가 모드를 안 보낼 때(옛 송신기 · 녹화 재생) 이 서버가 드는 모드
         self.mode_by = None            # 마지막 프레임의 모드를 누가 들었나: 'sensor' | 'display'
+        self.health = Health()         # 들어오는 센서 상태 -> errors.log (바뀔 때만)
         threading.Thread(target=self.loop, daemon=True, name='twin').start()
 
     # 보내는 쪽(TCP 상대)의 UDP 5011 로 제어 신호
@@ -603,6 +688,7 @@ class Twin:
                 raise ValueError('알 수 없는 cmd: %r' % cmd)
             paused = self.paused
             self.rx.hold = paused                         # 멈춘 동안 TCP 연결을 끊지 않는다
+            self.health.last_recv = None                  # 멈춘 동안은 프레임 끊김으로 남기지 않는다
         sent = self.send(cmd)
         log.info('control %s (sent %s) paused=%s', cmd, sent, paused)
         return dict(ok=True, paused=paused, sent=sent)
@@ -642,11 +728,16 @@ class Twin:
         with self.lock:
             if self.frame is not None and not self.paused and now - max(self.frame['recv_t'], self.resume_t) > 5.0:
                 self.frame, self.snap, self.rgb, self.active = None, None, None, {}
-                log.info('no frame for 5 s -> disconnected')
+                elog.warning('5 초 동안 프레임 없음 -> 연결 끊김 표시 (센서 파이 live_twin · 네트워크 · 카메라 USB)')
+                self.health.last_recv = None
 
     def process(self, f, sess):
         hdr = f['hdr']
         t0 = time.perf_counter()
+        try:
+            self.health.check(f, sess, self.session)
+        except Exception:
+            log.exception('health')
         try:
             self.mesh.build(f, 0)
         except Exception:
@@ -965,7 +1056,10 @@ class Handler(BaseHTTPRequestHandler):
                 after = int(q.get('after', '-1'))
             except ValueError:
                 after = -1
-            return self.send_json(VOICE.wait(after))
+            voice = VOICE.wait(after)
+            if self.app.volume.get()['muted']:           # 디스플레이를 음소거하면 보는 사람 브라우저도 음성을 안 낸다
+                voice['kind'] = None
+            return self.send_json(voice)
         if path == '/api/voice.wav':
             kind = dict(p.split('=', 1) for p in urlsplit(self.path).query.split('&') if '=' in p).get('kind')
             if not getattr(a.twin.voice, 'ok', False) or VoiceFeed.parse(a.twin.voice, kind) is None:

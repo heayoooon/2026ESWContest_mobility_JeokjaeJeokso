@@ -200,7 +200,8 @@
   flex: none;
   height: 84px;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
   gap: 0;
   background: var(--canvas);
   border-top: 1px solid var(--hairline);
@@ -249,6 +250,7 @@
 .tw-tile-val { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; min-width: 0; }
 .tw-tile-val b { font-size: 24px; font-weight: 700; line-height: 1; color: var(--ct); font-variant-numeric: tabular-nums; }
 .tw-tile-val small { font-size: 12px; font-weight: 300; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.tw-tile-sub { margin-top: -2px; font-size: 10px; font-weight: 400; line-height: 1; color: var(--muted); font-variant-numeric: tabular-nums; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 .tw-tile-bar { position: relative; height: 2px; background: var(--surface-strong); }
 .tw-tile-bar i { position: absolute; inset: 0; background: var(--c); transform-origin: left center; transition: transform 0.25s; }
 .tw-tile.lvn .tw-tile-bar i { background: var(--muted-soft); }
@@ -358,13 +360,14 @@
 .tw-cells .cell small { font-size: 11px; font-weight: 300; color: var(--muted); font-variant-numeric: tabular-nums; }
 @keyframes tw-rise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
 
-/* ── 짧은 알림 · 일시정지 · 기다림: 흰 판 ── */
+/* ── 짧은 알림 · 일시정지 · 기다림: 흰 판 ──
+   짧은 알림 (시점 · 적재/주행 · 기준 재설정) 은 오른쪽 막대 맨 위 '시점' 단추 바로 왼쪽에 붙는다 */
 .tw-toast {
   position: absolute;
-  left: 50%;
-  top: 10px;
-  transform: translateX(-50%);
+  right: 72px;
+  top: 3px;
   padding: 9px 16px;
+  white-space: nowrap;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.5px;
@@ -387,7 +390,7 @@
   white-space: nowrap;
   pointer-events: none !important;
 }
-.tw-paused + .tw-toast, .tw-toast { top: 10px; }
+.tw-paused + .tw-toast, .tw-toast { top: 3px; }
 .tw-paused ~ .tw-toast { top: 54px; }
 .tw-wait {
   position: absolute;

@@ -23,6 +23,8 @@ export type CheckView = {
   sentence: string
   /** 문장 뒤 숫자 설명 */
   detail: string
+  /** 큰 숫자 아래 작은 줄 (벨트: 누름 계수 K 와 누름 자리 x, y) */
+  sub?: string
   /** 3D 이름표 (짧게) */
   tag: string
   /** 0..1 막대 (값 / 기준). 없으면 null */
@@ -167,6 +169,14 @@ function moveView(state: TwinState, level: Level, reason: string): CheckView {
   return { ...base, word: level === 0 ? '정상' : '', sentence: '화물 이동 없음', detail: `예측과 차이 ${value} mm`, tag: '화물 이동' }
 }
 
+/** 벨트 누름 계수 K 와 누름 자리 x, y (mm). 센서 파이가 아직 안 보내면 없음, 자리를 아직 모르면 — */
+function beltFit(b: TwinBelt | undefined): string | undefined {
+  const k = num(b?.k)
+  if (k === null) return undefined
+  const mm = (v: number | null | undefined) => (num(v) === null ? '—' : `${Math.round(num(v) as number)}`)
+  return `K ${k.toFixed(2)}  x ${mm(b?.x_mm)}  y ${mm(b?.y_mm)}`
+}
+
 function beltView(state: TwinState, key: 'c1' | 'c2', level: Level, reason: string): CheckView {
   const b: TwinBelt | undefined = state.sensors.belts?.find((x) => x.key === key)
   const name = NAMES[key]
@@ -183,6 +193,7 @@ function beltView(state: TwinState, key: 'c1' | 'c2', level: Level, reason: stri
     unit: min !== null ? `/ ${f1(min)} N` : 'N',
     ratio: shownN !== null && min ? Math.max(0, shownN / (min * 1.5)) : null,
     mark: min ? 1 / 1.5 : null,
+    sub: beltFit(b),
   }
   const need = min !== null ? ` · 필요 ${f1(min)} N` : ''
   // 2026-10-08: 하한(EN 12195-1)의 % 로 부족 · 풀림, 상한(벨트 · 셀 한계)의 % 로 과조임 · 상한 넘음
@@ -210,10 +221,11 @@ function weight(c: CheckView) {
   return lv * 10 + kind
 }
 
-export function buildView(state: TwinState | null, connected: boolean): TwinView {
+/** hideMove: 적재 모드에서는 화물 이동을 안 본다 (올리고 내리는 중이라 항상 움직인다) */
+export function buildView(state: TwinState | null, connected: boolean, hideMove = false): TwinView {
   const risk = state?.risk ?? null
   const judged = !!risk && risk.level !== null && risk.level !== undefined
-  const checks: CheckView[] = CHECK_ORDER.map((key) => {
+  const checks: CheckView[] = (hideMove ? CHECK_ORDER.filter((k) => k !== 'move') : CHECK_ORDER).map((key) => {
     const rc = risk?.checks?.find((c) => c.key === key)
     let level: Level = judged ? ((rc?.level ?? 0) as Level) : null
     // 벨트는 센서 쪽 level 도 있다 (판정이 없을 때 쓰지 않는다)
