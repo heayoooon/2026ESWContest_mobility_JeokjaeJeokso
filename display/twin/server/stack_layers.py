@@ -65,6 +65,7 @@ TOP_TOL = .025             # 윗면이 이만큼 안이면 같은 물건
 PENDING_TOP = .02          # 새 물건 후보끼리 같은 것으로 볼 윗면 차이
 LOW_DROP, LOW_FRAC, LOW_HOLD = .05, .6, .2   # 자리 칸의 LOW_FRAC 이 윗면보다 LOW_DROP 넘게 낮은 채 LOW_HOLD 초 -> 없어짐
 NODATA_S = 5.0             # 그 자리 깊이 값이 없고 후보도 안 나온 채 이만큼 -> 없어짐
+BLIND_FRAC = .1            # 높이맵 전체에서 값 있는 칸이 이 비율 밑이면 카메라가 가려진 것 -> NODATA_S 로 지우지 않는다
 GEOM_MOVE, GEOM_HOLD, GEOM_N = .02, 1.5, 20   # 모양은 GEOM_MOVE 넘게 GEOM_HOLD 초 이어질 때만 바꾼다
 STRIP_TOP, STRIP_GAP = .012, .30              # 한 상자가 두 줄로 맞춰진 것: 높이 차이 · 사이 거리
 # 높이맵으로 물건 따라가기: 크기는 고정, 위치만 옮긴다 (다시 맞추기를 기다리지 않는다). 2026-11-01 실제연습1 녹화 기준
@@ -75,7 +76,7 @@ TRACK_SEEN, TRACK_VACATED = .3, .2           # 새 자리 안에 보여야 할 �
 LEVEL_NEAR, LEVEL_SHOW = .05, .015           # 윗면 높이를 따라갈 범위 · 화면 값을 바꿀 차이 (뚜껑이 눌리거나 물건이 얹혀 몇 cm 씩 변한다)
 MOVING_MAX = 5.0           # 자리가 빈 채 근처에 윗면이 있어도 이만큼 지나면 없어진 것
 LOCK_S, GROW, GROW_S = 3.0, 1.15, 10.0   # 생기고 LOCK_S 뒤에는 크기를 후보로 안 바꾼다. 단 GROW_S 안에 후보가 지금 크기를 덮고 GROW 배 넘게 크면 넓힌다 (일부만 보였던 것)
-MIN_BOX = .012             # 바닥 넓이가 이보다 작은 상자는 만들지 않는다 (m2, 약 11 x 11 cm). 놓는 동안 · 다시 켠 뒤 잡힌 조각. 2 kg 미만은 어차피 물통
+MIN_BOX = .012             # 바닥 넓이가 이보다 작은 상자는 만들지 않는다 (m2, 약 11 x 11 cm). 놓는 동안 · 다시 켠 뒤 잡힌 조각
 STEADY_STD, STEADY_S = 60.0, .6                # 무게 흔들림(g) 이 이보다 크면 손이 닿아 있는 것 -> 후보로 새 물건을 안 만든다 (튄 무게를 믿지 않는다)
 COLD_DW = 1000.0                               # 켠 뒤 무게가 이만큼 변하면 짐을 올린 것 (주행 흔들림은 1 kg 안)
 COLD_G = 1500.0                                # 켠 순간 이미 이만큼 올라와 있을 때만 켠 직후로 친다 (빈 판에서 시작하면 무게 계단이 정한다)
@@ -93,7 +94,6 @@ BOTTLE_2L = (.11, .31)
 # load_kg 는 벨트를 조일 때 1 kg 넘게 출렁이고 늦어서 여기에 안 쓴다. 계단 크기는 물통 무게의 BOTTLE_DROP_PART 넘게, BOTTLE_DROP g 안
 BOTTLE_GONE, BOTTLE_DROP, BOTTLE_DROP_PART, BOTTLE_EVENT_S, BOTTLE_WEIGHT = .8, (150.0, 2600.0), .8, 8.0, 2000.0   # 반쯤 들었다 놓는 것은 뺀 게 아니다
 STEP_STD, STEP_S, STEP_MIN = 40.0, .6, 100.0
-CHANGE_DIFF, CHANGE_MIN = .03, 8              # 무게가 늘 때 높이맵이 이만큼(m) 달라진 칸 덩어리 = 놓은 자리, 최소 칸 수
 LATE_S = 8.0               # 놓고 이만큼 뒤에 맞춰져도 무게 변화를 찾는다
 BELT_CHANGE = 3.0          # 장력이 이만큼(N) 변했으면 총무게 변화에 벨트가 섞인 것 -> 그 변화는 물건 무게로 안 친다
 BOTTLE_NEAR, BOTTLE_MOVE, BOTTLE_PLUS_G = .18, .08, 300.0   # 물통 조각으로 볼 거리 · 후보 중심이 이만큼 벗어나면 옮김 · 무게가 이만큼 늘면 조각 아닌 새 물건
@@ -454,17 +454,20 @@ class ObjectMemory:
         near = int(lvl[j0:j1, i0:i1].sum())
         return near >= .4 * ((o['x1'] - o['x0']) * (o['y1'] - o['y0'])) / (c * c)
 
+    @staticmethod
+    def _blind(frame):
+        """카메라가 가려졌나 (높이맵 전체에 값 있는 칸이 거의 없다)."""
+        h = frame.get('h')
+        return h is None or np.isfinite(h).mean() < BLIND_FRAC
+
     def _gone(self, o, frame, t, load, hm):
         if o['kind'] == 'bottle' and o.get('light'):
             if self._mark_here(o) >= MARK_N:
                 o['seen'] = t
             return t - o['seen'] > LIGHT_GONE
         if o['kind'] == 'bottle':
-            if t - o['seen'] < BOTTLE_GONE:
-                o['drop_since'] = None
+            if t - o['seen'] < BOTTLE_GONE or load is None:   # 무게를 못 읽는 동안은 뺐는지 모른다 (값이 돌아오면 계단으로 본다)
                 return False
-            if load is None:
-                return True
             ev = self.drop_event
             if ev is None or t - ev[0] > BOTTLE_EVENT_S or ev[0] < o['born'] or not max(BOTTLE_DROP[0], BOTTLE_DROP_PART * o['weight']) <= ev[1] <= BOTTLE_DROP[1]:
                 return False
@@ -488,7 +491,7 @@ class ObjectMemory:
                 self._note('상자 #%d 뺀 것으로 봄 (깊이 값 없음, 무게 -%.0f g)', o['id'], ev[1])
                 return True
             if cells is None or len(cells) < 6:
-                return t - o['seen'] > NODATA_S        # 값이 없는 채로 오래 (ROI 밖 · 카메라 가림)
+                return t - o['seen'] > NODATA_S and not self._blind(frame)   # 값이 없는 채로 오래 (ROI 밖). 카메라 전체가 가려졌으면 모른다
         else:
             o['nodata_since'] = None
         if (cells < o.get('level', o['top']) - LOW_DROP).mean() < LOW_FRAC:
@@ -530,6 +533,7 @@ class ObjectMemory:
     def _find_new(self, hm, frame, floor):
         """높이맵에서 기억이 설명 못 하는 물건을 직접 찾는다: 평평한 네모 = 상자, 짧은 쪽 단면이 볼록한 길쭉한 것 = 원통."""
         g = frame['hdr'].get('grid')
+        self.hand_cells = 0
         if hm is None or not g or floor is None:
             return []
         c = g['cell']
@@ -557,24 +561,21 @@ class ObjectMemory:
             v = hm[ys, xi]
             w, d = (xi.max() - xi.min() + 1) * c, (ys.max() - ys.min() + 1) * c
             short, long_ = min(w, d), max(w, d)
-            kind = 'box'
             if CYL_SHORT[0] <= short <= CYL_SHORT[1] and CYL_LONG[0] <= long_ <= CYL_LONG[1]:
                 u = (xi if w <= d else ys) * c
                 if len(np.unique(u)) >= 4 and np.polyfit(u, v, 2)[0] < -CYL_CURVE:
                     continue                           # 볼록한 길쭉한 것은 상자가 아니다 (물통은 무게 계단이 만든다)
-            if True:                                   # 손 · 벨트가 붙어 있어도 가장 넓은 높이의 칸만
-                top = float(np.median(v))
-                vals, n = np.unique(np.round(v / FLAT_TOL), return_counts=True)
-                top = float(vals[n.argmax()]) * FLAT_TOL
-                sub = np.zeros(hm.shape, bool)
-                near = np.abs(v - top) <= FLAT_TOL
-                sub[ys[near], xi[near]] = True
-                parts = components(sub)
-                if not parts:
-                    continue
-                keep = max(parts, key=len)
-                if len(keep) < FLAT_N:
-                    continue
+            vals, n = np.unique(np.round(v / FLAT_TOL), return_counts=True)   # 손 · 벨트가 붙어 있어도 가장 넓은 높이의 칸만
+            top = float(vals[n.argmax()]) * FLAT_TOL
+            sub = np.zeros(hm.shape, bool)
+            near = np.abs(v - top) <= FLAT_TOL
+            sub[ys[near], xi[near]] = True
+            parts = components(sub)
+            if not parts:
+                continue
+            keep = max(parts, key=len)
+            if len(keep) < FLAT_N:
+                continue
             ys, xi = keep[:, 0], keep[:, 1]
             i0, i1 = int(np.percentile(xi, 2)), int(np.percentile(xi, 98)) + 1
             j0, j1 = int(np.percentile(ys, 2)), int(np.percentile(ys, 98)) + 1
@@ -582,7 +583,7 @@ class ObjectMemory:
             if min(w, d) < FLAT_SIDE or w * d < MIN_BOX or len(keep) < FLAT_FILL * (i1 - i0) * (j1 - j0):
                 continue
             nb = dict(x0=g['x0'] + i0 * c, x1=g['x0'] + i1 * c, y0=g['y0'] + j0 * c, y1=g['y0'] + j1 * c,
-                      top=float(np.median(hm[ys, xi])), bottom=float(np.median(exp[ys, xi])), kind=kind, shape='box',
+                      top=float(np.median(hm[ys, xi])), bottom=float(np.median(exp[ys, xi])), kind='box', shape='box',
                       direct=True, held=False, narrow=min(w, d) <= BOTTLE_NARROW)
             nb['color'] = np.clip(np.median(col[ys, xi], axis=0) / 255., 0, 1) if col is not None and np.shape(col)[:2] == hm.shape else (.6, .5, .4)
             if self._is_strip(nb):
@@ -602,9 +603,10 @@ class ObjectMemory:
 
     def _box_settled(self, ev):
         """물통이 아닌 무게 계단: 방금 놓은 상자에서 손을 마저 뗀 것이다. 그 상자 무게를 고친다 (나중에 뺄 때 비교한다)."""
-        for o in self.objs:
-            if o['kind'] != 'bottle' and o.get('dw') is not None and o.get('w0') is not None and ev[0] - o['born'] <= BOX_SETTLE_S and self.level is not None:
-                o['dw'] = max(o['dw'], self.level[0] - o['w0'])
+        fresh = [o for o in self.objs if o['kind'] != 'bottle' and o.get('dw') is not None and o.get('w0') is not None and ev[0] - o['born'] <= BOX_SETTLE_S]
+        if fresh and self.level is not None:           # 상자를 잇달아 놓았으면 마지막 상자 몫이다
+            o = max(fresh, key=lambda q: q['born'])
+            o['dw'] = max(o['dw'], self.level[0] - o['w0'])
 
     def _bottle_from_weight(self, t, load, hm, frame, floor):
         """손을 뗀 상태로 무게가 물통만큼 늘었고, 네모가 아니고, 받침 위에 자국이 있으면 물통. 모양이 나올 때까지 BOTTLE_WAIT 초 기다린다."""
@@ -763,11 +765,6 @@ class ObjectMemory:
             if result >= BOTTLE_G[0]:
                 return result
         return result
-
-    @staticmethod
-    def _series(d, t0, t1):
-        v = [g for ts, g in d if t0 <= ts <= t1]
-        return float(np.median(v)) if len(v) >= 3 else None
 
     def _steady(self, t):
         """무게가 안 흔들리나 (손이 안 닿아 있나). 무게를 모르면 그렇다고 친다."""
@@ -1045,11 +1042,10 @@ class ObjectMemory:
             if m['capped'] and abs(o[keys[0]] - m[keys[0]]) > CAP_MOVE:
                 o.update({k: m[k] for k in keys})
             return
-        if not same_place:
-            self._note('물건 #%d 물통 자리 고침 (%s, 자국 %d 칸)', o['id'], '가로' if m['axis'] == 'x' else '세로', m['n'])
-            o.update({k: m[k] for k in ('x0', 'x1', 'y0', 'y1', 'axis', 'sup')})
-            o['from_geom'] = {k: m[k] for k in ('x0', 'x1', 'y0', 'y1')}
-            o['from_geom']['top'] = m['base'] + BOTTLE_2L[0]
+        self._note('물건 #%d 물통 자리 고침 (%s, 자국 %d 칸)', o['id'], '가로' if m['axis'] == 'x' else '세로', m['n'])
+        o.update({k: m[k] for k in ('x0', 'x1', 'y0', 'y1', 'axis', 'sup')})
+        o['from_geom'] = {k: m[k] for k in ('x0', 'x1', 'y0', 'y1')}
+        o['from_geom']['top'] = m['base'] + BOTTLE_2L[0]
 
     def _same_box(self, g, dw, t):
         """방금 만든 상자와 같은 물건인가. 같으면 그 상자를 넓히고 True. 놓는 중에 잡힌 낮은 조각은 여기서 지운다."""
@@ -1061,7 +1057,6 @@ class ObjectMemory:
                 return True
         if dw is None or math.isnan(dw) or dw < BOTTLE_G[0]:
             return False
-        area = lambda q: (q['x1'] - q['x0']) * (q['y1'] - q['y0'])
         for q in [o for o in self.objs if o['kind'] != 'bottle' and t - o['born'] <= MERGE_S and o.get('dw') is not None]:
             common = min(q['x1'], g['x1']) - max(q['x0'], g['x0'])
             gap = max(q['y0'] - g['y1'], g['y0'] - q['y1'])
@@ -1117,6 +1112,8 @@ class ObjectMemory:
             o['light'] = True                          # 무게로 확인 못 한 물통: 모양이 안 보이면 없앤다
             self._note('물건 #%d 생김: 물통 (켠 직후, 근거 %s)', o['id'], '뚜껑 색' if cap else '병 모양')
         else:
+            if self._too_small(p, kind):               # 안 만들 후보로 아래 물건을 지우지 않게 먼저 본다
+                return
             # 새 물건이 아래 물건보다 훨씬 넓거나 아래 것이 아주 얇으면, 아래 것은 상자가 놓이는 동안 일부만 본 것이다
             # (작은 상자 위에 큰 상자를 얹는 일은 드물다). 지우고 그 자리를 새 물건이 차지한다
             area = lambda q: (q['x1'] - q['x0']) * (q['y1'] - q['y0'])
@@ -1128,8 +1125,6 @@ class ObjectMemory:
                       and (_overlap_min(q, g) > .3 or _overlap_min(q['from_geom'], g) > .3)]:
                 self.objs.remove(o)
                 self._note('물건 #%d 지움 (물통이 아니라 놓는 중인 상자였다)', o['id'])
-            if self._too_small(p, kind):
-                return
             if self._same_box(g, dw, t):
                 return
             o = self._new(g, p['c'], p['c']['bottom'], t, load, 'box')
@@ -1147,7 +1142,7 @@ class ObjectMemory:
             self.loads.append((t, float(load)))
         if belts is not None and None not in belts:
             self.belts.append((t, float(belts[0]), float(belts[1])))
-        self.w = self._series(self.loads, t - 1.0, t)
+        self.w = self._load(t - 1.0, t)
         if self.w is None and load is not None:
             self.w = float(load)
         hm = self._height_median(frame)
@@ -1402,7 +1397,6 @@ class StackLayers:
             self.ms = (time.perf_counter() - t0) * 1000
             return self.memory.update([], frame, t_now, self.floor, load, belts), self.floor
         fp, fc, tp, ap, ac = self.cloud(frame)
-        frame['_cloud'] = (ap, ac)                        # ObjectMemory 뚜껑 색 단서
         solid = [b for b in boxes if b.get('shape') != 'cylinder' and b['top'] - b['bottom'] >= .06]
         if solid:
             f = self.find_floor(tp, min(b['top'] for b in solid))

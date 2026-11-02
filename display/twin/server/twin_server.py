@@ -630,7 +630,7 @@ class Twin:
         self.rx.start()
         self.mesh, self.alerts = tv.StableBoxMesh(), tv.Alerts()
         # 쌓인 화물을 층(상자)별로 + 옆 짐. 실제 수신 포트만 물건 기억을 파일에 둔다 (다시 켜도 안 잊는다)
-        self.layers = StackLayers(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs', 'objects.json') if port == 5010 else None)
+        self.layers = StackLayers(os.path.join(LOG_DIR, 'objects.json') if port == 5010 else None)
         self.boxes, self.base = [], 0.0
         self.reg = Registration()
         self.voice = hud_v3.Voice()
