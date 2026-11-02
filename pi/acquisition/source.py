@@ -10,6 +10,7 @@
 IMU_HZ 로 읽어 그 구간의 평균 · 최대 · 현재 기울기를 같은 프레임에 붙인다.
 시작할 때 DT 가 안 떨어지는 모듈은 읽기에서 빼고, 프레임에는 못 연 IMU 와 함께 None 으로 남긴다.
 """
+import logging
 import os
 import sys
 import time
@@ -23,15 +24,24 @@ from sensors.mpu6050_udp import MPU6050UDP, udp_key
 
 G_TO_N = 9.80665 / 1000     # 질량(g) -> 힘(N)
 ALPHA = 0.98                # 기울기 상보필터 (tools/imu_angle.py 와 같은 값)
+ZERO_N = 3                  # 6축이 연속 이만큼 전부 0 = 전원이 끊겼다 돌아와 절전 (살아 있는 센서는 잡음 때문에 0 이 안 나온다)
+SAME_N = 20                 # 원시값(6축 + 온도)이 연속 이만큼 똑같음 = 절전 비트만 켜져 마지막 값에서 멈춤
+                            # (100 Hz 로 읽어 같은 샘플을 두 번 읽는 일은 있어도 0.2 초 내내 같지는 않다)
+FAIL_N = 50                 # 연속 읽기 실패 (100 Hz 에서 0.5 초) 넘으면 다시 깨워 본다
+WAKE_GAP = 1.0              # 다시 깨우기 최소 간격 (초)
 
 
 # --------------------------------------------------------------------------
 # IMU: HX711 을 기다리는 동안 읽어서 프레임마다 정리
 # --------------------------------------------------------------------------
 class ImuSet:
-    """IMU 들을 IMU_HZ 로 읽어 쌓아두고, 프레임마다 구간 평균 · 최대 + 현재 기울기를 내준다."""
+    """IMU 들을 IMU_HZ 로 읽어 쌓아두고, 프레임마다 구간 평균 · 최대 + 현재 기울기를 내준다.
 
-    def __init__(self, sensors, hz):
+    전원이 잠깐 끊기면 MPU-6050 은 처음 켤 때처럼 절전(값 전부 0)으로 돌아온다. 절전 비트만 켜지면 마지막 값에서 멈춘다.
+    어느 쪽이든 그 값은 버리고(0 을 넣으면 기울기가 178° 처럼 굳어 보인다) 다시 깨운다.
+    읽기가 계속 실패해도(선이 빠짐) 1 초마다 깨워 본다. log 가 있으면 남긴다."""
+
+    def __init__(self, sensors, hz, log=None):
         self.sensors = sensors                  # [(라벨, 장치, imu_cal 항목 또는 None)]
         self.labels = [s[0] for s in sensors]
         self.period = 1.0 / max(1, hz)
@@ -41,6 +51,36 @@ class ImuSet:
         self.n = {l: 0 for l in self.labels}
         self.angle = {l: None for l in self.labels}     # (roll, pitch, 마지막 시각)
         self.errors = {l: 0 for l in self.labels}
+        self.log = log
+        self.zeros = {l: 0 for l in self.labels}        # 연속 0 읽기
+        self.same = {l: 0 for l in self.labels}         # 연속 같은 원시값
+        self.last_raw = {l: None for l in self.labels}
+        self.fails = {l: 0 for l in self.labels}        # 연속 읽기 실패
+        self.wakes = {l: 0 for l in self.labels}        # 다시 깨운 횟수
+        self.wake_t = {l: 0.0 for l in self.labels}
+        self.down = {l: None for l in self.labels}      # 문제가 시작된 시각 (회복 기록용)
+
+    def _note(self, level, text):
+        if self.log is not None:
+            self.log.log(level, text)
+
+    def _wake(self, label, dev, why):
+        now = time.monotonic()
+        if now - self.wake_t[label] < WAKE_GAP or not hasattr(dev, "wake"):
+            return
+        self.wake_t[label] = now
+        if self.down[label] is None:
+            self.down[label] = now
+        self.wakes[label] += 1
+        k = self.wakes[label]
+        try:
+            dev.wake()
+            ok = "다시 깨움"
+        except Exception as e:                  # 선이 빠져 있으면 쓰기도 실패한다
+            ok = "깨우기 실패: %s" % e
+        if k <= 5 or k % 30 == 0:               # 선이 오래 빠져 있어도 줄이 넘치지 않게
+            self._note(logging.WARNING, "IMU %s %s -> %s (%d번째). 계속되면 VCC · GND 선 (전원이 잠깐씩 끊긴다)" % (label, why, ok, k))
+        self.angle[label] = None                # 멈췄던 동안의 기울기는 버리고 다시 잡는다
 
     def poll(self):
         """주기가 됐으면 전 IMU 를 한 번씩 읽는다. 아니면 바로 돌아간다."""
@@ -51,13 +91,39 @@ class ImuSet:
         if self.next_t < now:
             self.next_t = now + self.period     # 밀렸으면 기준을 다시 잡는다
         for label, dev, cal in self.sensors:
+            udp = hasattr(dev, "drain")
             try:
                 # ESP32 무선(drain)은 기다리지 않고 쌓인 패킷 전부, I2C 는 한 번 읽는다
-                rows = dev.drain() if hasattr(dev, "drain") else [dev.read_raw()]
-            except Exception:                   # I2C 한 번 실패는 흔하다. 세고 넘어간다
+                rows = dev.drain() if udp else [dev.read_raw()]
+            except Exception as e:              # I2C 한 번 실패는 흔하다. 세고 넘어간다
                 self.errors[label] += 1
+                self.fails[label] += 1
+                if self.fails[label] == FAIL_N:
+                    self._note(logging.WARNING, "IMU %s 읽기 %d번 연속 실패: %s -> SDA 물리 3 · SCL 물리 5 · 전원선 확인"
+                               % (label, FAIL_N, e))
+                if self.fails[label] >= FAIL_N:
+                    self._wake(label, dev, "읽기 실패")
                 continue
-            for r in rows:
+            self.fails[label] = 0
+            good = [r for r in rows if udp or any(r[1:7])]
+            if len(good) < len(rows):
+                self.zeros[label] += len(rows) - len(good)
+                if self.zeros[label] >= ZERO_N and not good:
+                    self._wake(label, dev, "값이 전부 0 (전원이 끊겼다 돌아와 절전)")
+            if good and not udp:
+                raw = tuple(good[-1][1:8])
+                self.same[label] = self.same[label] + 1 if raw == self.last_raw[label] else 0
+                self.last_raw[label] = raw
+                if self.same[label] >= SAME_N:
+                    self._wake(label, dev, "값이 %d번 연속 똑같음 (절전 비트 · 멈춤)" % self.same[label])
+                    continue
+            if good:
+                self.zeros[label] = 0
+                if self.down[label] is not None:
+                    self._note(logging.INFO, "IMU %s 값 다시 들어옴 (%.1f 초 만에, 깨운 횟수 %d)"
+                               % (label, time.monotonic() - self.down[label], self.wakes[label]))
+                    self.down[label] = None
+            for r in good:
                 self._add(label, cal, r)
 
     def _add(self, label, cal, r):
@@ -75,7 +141,7 @@ class ImuSet:
         ar, ap = tilt(v[0], v[1], v[2])
         t = r[0] / 1e9
         prev = self.angle[label]
-        if prev is None:
+        if prev is None or t - prev[2] > 0.5:   # 처음 · 오래 못 읽은 뒤: 자이로 적분 대신 가속도로 다시 잡는다
             self.angle[label] = (ar, ap, t)
         else:
             dt = t - prev[2]
@@ -91,7 +157,10 @@ class ImuSet:
                 out[l] = None
                 continue
             ax, ay, az, gx, gy, gz = (x / n for x in self.sum[l])
-            roll, pitch, _ = self.angle[l]
+            if self.angle[l] is None:           # 이 구간 중에 다시 깨워 기울기를 버렸다: 구간 평균 가속도로
+                roll, pitch = tilt(ax, ay, az)
+            else:
+                roll, pitch, _ = self.angle[l]
             out[l] = ImuReading(ax=ax, ay=ay, az=az, gx=gx, gy=gy, gz=gz,
                                 roll=roll, pitch=pitch,
                                 ax_peak=self.peak[l][0], ay_peak=self.peak[l][1], n=n)
@@ -205,8 +274,10 @@ def open_sim(cfg):
 # 프레임 소스
 # --------------------------------------------------------------------------
 class FrameSource:
-    def __init__(self, cfg, sim=False):
+    def __init__(self, cfg, sim=False, log=None):
+        """log: logging.Logger (acquisition/errlog.py). 주면 IMU 다시 깨우기 · HX711 타임아웃을 남긴다."""
         self.cfg = cfg
+        self.log = log
         self.is_sim = sim
         self.notes = []                         # 요약 시트 메모로 갈 것들
         dev = open_sim(cfg) if sim else open_real(cfg, self.notes)
@@ -218,7 +289,10 @@ class FrameSource:
         say(self.hx.describe())
 
         self.cal = self._usable_cal()           # {라벨: (offset, g/count)}
-        self.imus = ImuSet(dev.imus, cfg.imu_hz)
+        self.imus = ImuSet(dev.imus, cfg.imu_hz, log)
+        if log is not None:
+            for n in self.notes:
+                log.warning("열 때: %s", n)
         for l, c in self.imu_cal.items():
             say("IMU   %s 열림  보정 %s" % (l, ("있음 (up %s)" % c.get("up", "+z")) if c else "없음"))
         if not sim:
@@ -282,6 +356,9 @@ class FrameSource:
             except HX711Timeout as e:
                 self.timeouts += 1
                 say("\n타임아웃 (DRDY 안 옴): %s" % ", ".join(e.waiting))
+                if self.log is not None and (self.timeouts <= 5 or self.timeouts % 50 == 0):
+                    self.log.warning("HX711 타임아웃 %d번째 (DRDY 안 옴): %s -> 그 모듈 전원 · DT 선",
+                                     self.timeouts, ", ".join(e.waiting))
                 hx.sync_reset(settle=0.3)       # 위상 다시 맞추고 계속
                 continue
             yield self._frame(s, self.imus.take())

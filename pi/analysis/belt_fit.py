@@ -42,7 +42,7 @@ k 와 (x, y) 의 뜻 (아직 코드에 반영 안 한 한계)
   - 장력 변화가 STEP_N 보다 작은 줄 (변화가 작아 잡음뿐)
   - 장력은 그대로인데 무게만 달라진 멈춘 구간이 CARGO_S 보다 짧으면 기준으로도 안 쓴다 (조이다 손으로 화물을 누름)
   - 벨트를 RELEASE_N 밑으로 풀면 그 벨트가 들어간 줄 전부. 다시 매면 누르는 자리가 바뀐다
-  - 풀어 낸 k 가 K_RANGE 밖이거나 y 가 시작값에서 셀 간격 W 의 Y_RANGE 넘게 멀면 그 벨트는 이전 값을 그대로 쓴다
+  - 풀어 낸 k 가 K_RANGE 밖이면 그 벨트는 이전 값을 그대로 쓴다. x, y 는 범위를 안 본다 (2026-11-01, 판 밖으로 나와도 그대로 쓴다)
 BELT_FIT=0 이면 추정하지 않고 시작값만 쓴다.
 """
 from dataclasses import dataclass
@@ -62,7 +62,6 @@ GATE = 0.35             # 셀 합 변화가 예상에서 이 비율 + GATE_G 넘
 GATE_G = 150            # g
 RELEASE_N = 2.0         # N. 벨트가 이보다 느슨하면 푼 것으로 보고 그 벨트 줄을 버린다
 K_RANGE = (1.2, 2.6)    # 그럴듯한 k (이론 2 sinα 는 최대 2, 10-25 실측 1.7 ~ 2.2)
-Y_RANGE = 0.3           # 누름 y 가 시작값에서 셀 간격 W 의 이 비율(392mm 면 118mm) 안이어야 받는다 (10-25 실측 17 ~ 36mm 차이)
 
 
 @dataclass
@@ -253,7 +252,7 @@ class BeltFit:
                 continue
             c = sol[0][i] if None not in sol else 0.0
             k = c * G / 1000
-            if not K_RANGE[0] <= k <= K_RANGE[1] or abs(sol[2][i] / c - self.start[label].y) > Y_RANGE * self.width:
+            if not K_RANGE[0] <= k <= K_RANGE[1]:
                 out[label] = last[label]
                 continue
             out[label] = Belt(k, sol[1][i] / c, sol[2][i] / c, steps)

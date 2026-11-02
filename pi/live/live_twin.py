@@ -22,6 +22,7 @@ PI = os.environ.get('SCSS_PI_DIR', os.path.dirname(HERE))          # 레포의 p
 sys.path[:0] = [HERE, PI]
 from twin_frame import ColorHeightMapper, ReliableSender, send_packet, MAX_RANGE, Image   # noqa: E402
 from twin.twin_core import world_rotation, summarize                                     # noqa: E402
+from acquisition.errlog import Edge, errlog                                              # noqa: E402  logs/errors_live_twin.log
 
 W, H, FPS = 848, 480, 30
 SESSION = os.urandom(8).hex()
@@ -62,6 +63,83 @@ def control_listener(port=5011):
             print('트윈 기록 끝', flush=True)
 
 
+CAM = dict(seq=0, rgb=None, depth=None, scale=0.001, viewers=0)
+CAM_CV = threading.Condition()
+CAM_PAGE = '''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>D435i 카메라</title><style>
+body{margin:0;background:#111;color:#ddd;font:14px system-ui,sans-serif}
+header{padding:10px 16px;font-weight:700}header span{font-weight:400;color:#999;margin-left:8px}
+main{display:flex;flex-wrap:wrap;gap:8px;padding:0 8px 8px}figure{margin:0;flex:1 1 420px}
+img{width:100%;display:block;background:#000}figcaption{padding:4px 2px;color:#999;font-size:12px}
+</style></head><body><header>D435i 카메라<span>센서 파이 실시간 · 디지털 트윈과 따로</span></header><main>
+<figure><img src="color.mjpg" alt="컬러"><figcaption>컬러 848x480</figcaption></figure>
+<figure><img src="depth.mjpg" alt="깊이"><figcaption>깊이 (가까움 빨강 -> 멂 파랑, 0.3 ~ 1.2 m, 검정 = 값 없음)</figcaption></figure>
+</main></body></html>'''.encode()
+# 깊이 색: 가까움 빨강 -> 노랑 -> 초록 -> 하늘 -> 파랑
+DEPTH_STOPS = np.array([[220, 40, 30], [245, 200, 40], [60, 200, 90], [40, 170, 230], [40, 60, 200]], np.float32)
+
+
+def depth_rgb(z_raw, scale, near=0.3, far=1.2):
+    z = z_raw.astype(np.float32) * scale
+    t = np.clip((z - near) / (far - near), 0, 1) * (len(DEPTH_STOPS) - 1)
+    i = np.minimum(t.astype(np.int32), len(DEPTH_STOPS) - 2)
+    f = (t - i)[..., None]
+    out = DEPTH_STOPS[i] * (1 - f) + DEPTH_STOPS[i + 1] * f
+    out[z_raw == 0] = 0
+    return out.astype(np.uint8)
+
+
+def camera_server(port):
+    """카메라 화면만 보는 웹 페이지 (http://<센서 파이>:port). 보는 사람이 있을 때만 프레임을 복사 · 압축한다."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            path = self.path.split('?')[0]
+            if path in ('/', '/index.html'):
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(CAM_PAGE)))
+                self.end_headers()
+                self.wfile.write(CAM_PAGE)
+                return
+            if path not in ('/color.mjpg', '/depth.mjpg'):
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            with CAM_CV:
+                CAM['viewers'] += 1
+            seen = -1
+            try:
+                while True:
+                    with CAM_CV:
+                        CAM_CV.wait_for(lambda: CAM['seq'] != seen, timeout=3)
+                        seen, rgb, dep, scale = CAM['seq'], CAM['rgb'], CAM['depth'], CAM['scale']
+                    if rgb is None:
+                        continue
+                    img = rgb if path == '/color.mjpg' else depth_rgb(dep, scale)
+                    buf = io.BytesIO()
+                    Image.fromarray(img).save(buf, format='JPEG', quality=80)
+                    jpg = buf.getvalue()
+                    self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\n\r\n' % len(jpg) + jpg + b'\r\n')
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                with CAM_CV:
+                    CAM['viewers'] -= 1
+
+    srv = ThreadingHTTPServer(('0.0.0.0', port), H)
+    srv.daemon_threads = True
+    print('카메라 화면 http://<센서 파이>:%d' % port, flush=True)
+    srv.serve_forever()
+
+
 def profile(sensor, stream, fmt):
     return next(p for p in sensor.get_stream_profiles()
                 if p.stream_type() == stream and p.format() == fmt and p.fps() == FPS
@@ -78,11 +156,16 @@ def main():
     ap.add_argument('--sensor-port', type=int, default=5020)
     ap.add_argument('--plate-z', type=float, default=-0.579, help='카메라 기준 판 윗면 높이 예상값 (m)')
     ap.add_argument('--plate-above-floor', type=float, default=0.208, help='판 윗면이 기준(방바닥)보다 높은 만큼 (m)')
+    ap.add_argument('--cam-port', type=int, default=8097, help='카메라 화면만 보는 웹 페이지 포트 (0 = 끔)')
     args = ap.parse_args()
+    log = errlog('live_twin')
+    edge = Edge(log)
     dests = [(h, int(p or 5010)) for h, _, p in (d.partition(':') for d in args.dest.split(','))]
     mirrors = [(h, int(p or 5010)) for h, _, p in (d.partition(':') for d in args.mirror.split(',') if d)]
     threading.Thread(target=sensor_listener, args=(args.sensor_port,), daemon=True).start()
     threading.Thread(target=control_listener, daemon=True).start()
+    if args.cam_port:
+        threading.Thread(target=camera_server, args=(args.cam_port,), daemon=True).start()
 
     dev = rs.context().query_devices()[0]
     sensors = dev.query_sensors()
@@ -107,6 +190,7 @@ def main():
     depth_s.start(sync)
     color_s.start(sync)
     scale = depth_s.as_depth_sensor().get_depth_scale()
+    CAM['scale'] = scale
     ex = dp.get_extrinsics_to(cp)
     ex_R = np.array(ex.rotation).reshape(3, 3).T                       # librealsense 는 열 우선
     cintr = cp.as_video_stream_profile().intrinsics
@@ -134,6 +218,7 @@ def main():
         acc = np.median(np.array(acc_hist), 0)
         if np.std(acc_hist, 0).max() > 0.5:
             print('! 보정하는 동안 카메라가 흔들렸다 (accel sd %.2f)' % np.std(acc_hist, 0).max(), flush=True)
+            log.warning('설치 보정 동안 카메라가 흔들렸다 (accel sd %.2f) -> 카메라 기울기가 틀릴 수 있다', np.std(acc_hist, 0).max())
         R = world_rotation(acc)
         intr = df.profile.as_video_stream_profile().intrinsics
         probe = ColorHeightMapper(intr, cintr, ex_R, ex.translation, scale, R, ((-5, 5), (-5, 5)), args.cell, 0.0)
@@ -151,9 +236,11 @@ def main():
             plate = float(np.median(p[sel, 2]))
             ref_h = plate - args.plate_above_floor
             print('판 윗면 %.3f m -> 기준(방바닥) %.3f m' % (plate, ref_h), flush=True)
+            log.info('설치 보정: 판 윗면 %.3f m -> 기준 %.3f m', plate, ref_h)
         else:
             ref_h = args.plate_z - args.plate_above_floor
             print('! 판 윗면을 못 찾아 기본 기준 %.3f m 를 쓴다 (판 위에 화물이 많거나 카메라가 바뀌었다)' % ref_h, flush=True)
+            log.warning('판 윗면을 못 찾아 기본 기준 %.3f m (판 위 화물이 많거나 카메라 위치 · 방향이 바뀜) -> 상자 높이가 틀릴 수 있다', ref_h)
         bounds = ((args.roi[0], args.roi[1]), (args.roi[2], args.roi[3]))
         hm = ColorHeightMapper(intr, cintr, ex_R, ex.translation, scale, R, bounds, args.cell, ref_h)
         print('설치 보정: ref_h %.3f m, 격자 %dx%d @ %.0f cm, ROI %s' % (ref_h, hm.nx, hm.ny, args.cell * 100, bounds), flush=True)
@@ -179,11 +266,14 @@ def main():
                             sizes.append(size); del sizes[:-100]; sent[0] += 1
                         if errors:
                             print('%s 다시 연결됨 %s' % (label, targets), flush=True)
+                        edge.set('send:' + label, False, '', '%s %s 다시 연결됨' % (label, targets))
                         errors = 0
                     except OSError as e:
                         errors += 1
                         if errors == 1 or errors % 50 == 0:
                             print('%s %s 에 못 보냄 (%s) — %.1f s 뒤 다시 시도' % (label, targets, e, retry_s), flush=True)
+                        edge.set('send:' + label, True, '%s %s 에 못 보냄 (%s) -> 받는 쪽 서버가 꺼졌거나 네트워크 (Tailscale · 핫스팟)'
+                                 % (label, targets, e))
                         time.sleep(retry_s)
 
             def post(pkt):
@@ -203,6 +293,12 @@ def main():
         while True:
             d, c = next_pair()
             now = time.time()
+            if CAM['viewers']:                                           # 카메라 화면을 보는 사람이 있으면 30 fps 그대로
+                rgb_c, dep_c = np.array(c.get_data()), np.array(d.get_data())
+                with CAM_CV:
+                    CAM['rgb'], CAM['depth'] = rgb_c, dep_c
+                    CAM['seq'] += 1
+                    CAM_CV.notify_all()
             if now < next_t:
                 continue                                                 # 30 fps 중 10 Hz 만 처리 · 송신
             next_t = max(next_t + period, now - period)
@@ -238,6 +334,8 @@ def main():
             age = round(now - STATE['sensor_t'], 3) if sens else None
             if sens and age > 2.0:
                 sens = None                                              # sensor_feed 가 멈췄으면 센서 없이
+            edge.set('sensor', sens is None, '센서 값이 안 온다 (sensor_feed 가 꺼졌거나 2 초 넘게 멈춤) -> 트윈에 센서 없이 보냄',
+                     '센서 값 다시 들어옴')
             header = dict(
                 v=2, session=SESSION, seq=seq, send_t=time.time(), run='live', scenario=None, src=['live', 'd435i'],
                 t_run=round(now - t0, 3), frame_ts=d.get_timestamp() / 1000,
@@ -271,7 +369,11 @@ def main():
                     '없음' if not sens else '%.2fs 전' % age), flush=True)
     except KeyboardInterrupt:
         pass
+    except Exception:
+        log.exception('카메라 루프 오류로 멈춤 (카메라 프레임이 안 오면 USB 3 연결 · 전원). autostart 지키미가 다시 켠다')
+        raise
     finally:
+        log.info('끝')
         for s in (depth_s, color_s, motion):
             try:
                 s.stop()

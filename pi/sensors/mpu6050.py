@@ -58,17 +58,27 @@ class MPU6050:
         self.busno = bus
         self.label = label or ("bus%d_%s" % (bus, hex(addr)))
         self.bus = SMBus(bus)
+        self.hz = hz
+        self.wake()
 
+    def wake(self):
+        """깨우고 설정을 다시 쓴다. 전원이 잠깐 끊기면 칩이 처음처럼 절전(PWR_MGMT_1 = 0x40) · 값 0 으로 돌아오므로
+        읽는 쪽(acquisition/source.py ImuSet)이 값이 전부 0 이면 이걸 다시 부른다."""
+        addr = self.addr
         self.bus.write_byte_data(addr, PWR_MGMT_1, 0x01)      # 깨우고 클럭은 자이로 X
         time.sleep(0.01)
         self.bus.write_byte_data(addr, CONFIG, 0x03)          # DLPF ~44Hz -> 출력 1kHz 기준
-        div = max(0, min(255, int(round(1000.0 / max(1, hz))) - 1))
+        div = max(0, min(255, int(round(1000.0 / max(1, self.hz))) - 1))
         self.bus.write_byte_data(addr, SMPLRT_DIV, div)
         self.bus.write_byte_data(addr, GYRO_CONFIG, 0x00)     # +-250 dps
         self.bus.write_byte_data(addr, ACCEL_CONFIG, 0x00)    # +-2 g
         time.sleep(0.05)
         self.actual_hz = 1000.0 / (1 + div)
         self.smplrt_div = div
+
+    def asleep(self):
+        """절전 비트(PWR_MGMT_1 bit 6)가 켜져 있나."""
+        return bool(self.bus.read_byte_data(self.addr, PWR_MGMT_1) & 0x40)
 
     def who_am_i(self):
         return self.bus.read_byte_data(self.addr, WHO_AM_I)
