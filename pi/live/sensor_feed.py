@@ -26,6 +26,7 @@ PI = os.environ.get('SCSS_PI_DIR', os.path.dirname(HERE))          # 레포의 p
 sys.path.insert(0, PI)
 
 from acquisition.config import Config                     # noqa: E402  배선 · 보정 · 판정 기준 (env.sh)
+from acquisition.errlog import Edge, errlog               # noqa: E402  오류 · 복구 기록 logs/errors_sensor_feed.log
 from acquisition.source import FrameSource                # noqa: E402
 from analysis.analyzer import Analyzer                    # noqa: E402  4단계 판정
 from analysis.overall import overall                      # noqa: E402
@@ -86,6 +87,21 @@ def row(f, res, cfg, mode):
         s['cog_x_pct'] = round(s['cog_x_mm'] / cfg.bed_l * 100, 1)
         s['cog_y_pct'] = round(s['cog_y_mm'] / cfg.bed_w * 100, 1)
     return s
+
+
+# 프레임 플래그 -> 오류 기록 문구 (상태가 바뀔 때만 한 줄)
+FLAG_TEXT = {'stuck_hi': '%s HX711 DT 가 계속 HIGH -> 그 모듈 전원 · DT 선',
+             'stuck_lo': '%s 값이 맨 아래에 붙음 -> 로드셀 4선 (E+ 빨강 · E- 검정 · A+ 초록 · A- 흰)',
+             'saturated': '%s 값이 끝까지 참 -> 과부하 또는 셀 단선',
+             'imu_miss': '%s IMU 값 없음 (이 프레임 동안 한 번도 못 읽음)'}
+
+
+def flag_edges(edge, flags):
+    """이번 프레임 플래그로 Edge 를 갱신한다: 새로 생긴 문제는 WARNING, 사라진 문제는 회복 INFO."""
+    now = {f for f in flags if f.partition(':')[0] in FLAG_TEXT}
+    for f in now | {k for k in edge.bad if k.partition(':')[0] in FLAG_TEXT}:
+        kind, _, lab = f.partition(':')
+        edge.set(f, f in now, FLAG_TEXT[kind] % lab, '%s 회복 (%s)' % (lab, kind))
 
 
 FIELDS = []
@@ -170,11 +186,13 @@ def main():
     ap.add_argument('--port', type=int, default=5020)
     args = ap.parse_args()
     global FIELDS
+    log = errlog('sensor_feed')
+    edge = Edge(log)
     cfg = Config()
     FIELDS = fields(cfg)
     print(cfg.describe(), flush=True)
     analyze = Analyzer(cfg)
-    src = FrameSource(cfg)
+    src = FrameSource(cfg, log=log)
     out = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)       # 이 파이 + LAN 까지만
     out.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)      # 같은 파이 안에서도 받게
@@ -193,12 +211,15 @@ def main():
             if want and analyze.set_mode(want):
                 b = {k: 'k %.2f y %s (%d회)' % (v.k, r1(v.y), v.steps) for k, v in analyze.belt_fit.belts.items()}
                 print('모드 -> %s  벨트 %s' % ('주행 (벨트 확정 · 기준 재설정)' if want == 'drive' else '적재 (벨트 추정 켬)', b), flush=True)
+                log.info('모드 -> %s  벨트 %s', want, b)
                 if want == 'drive':
                     MODE.pop('rebase', None)            # 주행으로 바뀌며 이미 rebase 했다: 같이 온 단추 요청은 겹치므로 버린다
             if MODE.pop('rebase', None):
                 analyze.rebase()
                 f.flags.append('rebase')
                 print('기준 재설정 (%d번째)' % analyze.rebase_n, flush=True)
+                log.info('기준 재설정 (%d번째)', analyze.rebase_n)
+            flag_edges(edge, f.flags)
             res = analyze(f)
             s = row(f, res, cfg, analyze.mode)
             msg = json.dumps(s, ensure_ascii=False, separators=(',', ':')).encode()
@@ -225,6 +246,9 @@ def main():
                     s.get('risk_overall') or ''), flush=True)
     except KeyboardInterrupt:
         pass
+    except Exception:
+        log.exception('센서 루프 오류로 멈춤 (%d 행 뒤). autostart 지키미가 20 초 안에 다시 켠다', n)
+        raise
     finally:
         src.close()
         fh.close()
@@ -232,6 +256,7 @@ def main():
             if REC['fh']:
                 rec_close()
         print('끝: %d 행 -> %s' % (n, path), flush=True)
+        log.info('끝: %d 행', n)
 
 
 if __name__ == '__main__':

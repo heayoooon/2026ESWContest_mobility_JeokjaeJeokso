@@ -39,6 +39,28 @@ python3 watch_sensors.py      # 값 보기 (--json 이면 한 행 전부)
   `run_live.sh` 가 켜기 전에 `pinctrl set 2 a3 pu; pinctrl set 3 a3 pu` 로 되돌린다.
 - 카메라 바닥 기준: 켤 때 판 윗면(카메라 아래 약 0.579 m)을 찾아 그보다 0.208 m 아래를 0 으로 둔다
   (`--plate-z`, `--plate-above-floor`). 판을 못 찾으면 기본값을 쓴다.
+- **IMU 다시 깨우기**: 전원이 잠깐 끊기면 MPU-6050 은 절전으로 돌아와 값이 전부 0 이 되고(기울기가 178° 처럼 굳어 보임),
+  절전 비트만 켜지면 마지막 값에서 멈춘다. `acquisition/source.py` ImuSet 이 둘 다 알아채(0 이 3번 · 같은 값이 20번 연속)
+  그 값은 버리고 바로 다시 깨운다 (1 초에 한 번까지). IMU 를 갈아 끼워도 송신을 다시 켤 필요가 없다. 새 IMU 는
+  판을 평평하게 두고 `python3 calibration/imu_calibrate.py --auto --only bus1:0x68` 로 보정한다.
+- **카메라 화면만 보기**: `http://<센서 파이>:8097` (컬러 · 깊이 실시간, 디지털 트윈과 따로. `--cam-port 0` 이면 끔).
+
+## 오류 기록 (디버깅)
+
+`logs/errors_sensor_feed.log`, `logs/errors_live_twin.log` (1 MB x 5 개로 돌려 씀, `acquisition/errlog.py`).
+문제가 **생길 때와 풀릴 때만** 한 줄씩 남는다 (같은 문제를 되풀이하지 않는다). 잡히지 않은 예외는 traceback 까지.
+
+| 남는 것 | 예 |
+|---|---|
+| IMU 절전 · 멈춤 · 읽기 실패와 다시 깨움, 회복 | `IMU imu1 값이 전부 0 (전원이 끊겼다 돌아와 절전) -> 다시 깨움 (2번째)` |
+| HX711 타임아웃 · DT 계속 HIGH · 값이 바닥 / 끝에 붙음 | `SE 값이 맨 아래에 붙음 -> 로드셀 4선 ...` |
+| 열 때 못 연 센서, 모드 · 기준 재설정 | `모드 -> drive`, `기준 재설정 (3번째)` |
+| 카메라 설치 보정 실패 · 흔들림, 디스플레이로 못 보냄 · 다시 연결, 센서 값 끊김 | `디스플레이 [...] 에 못 보냄 (...)` |
+
+```bash
+tail -f logs/errors_*.log          # 센서 파이 (pi/live 에서)
+```
+디스플레이 쪽은 `display/twin/logs/errors.log`.
 
 ## 적재 · 주행 모드
 
