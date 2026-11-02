@@ -35,6 +35,9 @@ cd display/twin
 
 필요: Raspberry Pi OS (Wayland, labwc), chromium, python3 + numpy · pygame · Pillow · PyOpenGL (`apt install python3-numpy python3-pygame python3-pil python3-opengl`), PipeWire (`wpctl`, 음량).
 로그: `display/twin/logs/` (server.log, server.out.log, launch.log, chromium.log)
+- **errors.log** (디버깅용, 1 MB x 5): 경고 · 오류 · traceback + 들어오는 상태가 **나빠지고 풀릴 때만** 한 줄
+  (`twin_server.Health`: 센서 값 없음 · 늦음, IMU1 값 없음 · 3 초째 똑같음, 로드셀 · 장력 값 없음, 프레임 끊김, 5 초 연결 끊김,
+  송신기 다시 켜짐). 센서 파이 쪽 원인은 센서 파이 `pi/live/logs/errors_*.log` 에 같은 시각으로 남는다.
 
 센서 파이와는 LAN 선으로 연결한다. 센서 파이 쪽 송신기가 `<디스플레이 파이 IP>:5010` 으로 TCP 연결해서 보낸다.
 
@@ -62,6 +65,7 @@ cd display/twin
 - IMU: `imu1_ax_G imu1_ay_G imu1_az_G imu1_gz_dps imu1_roll_deg imu1_pitch_deg`
 - 판정 (`pi/analysis`, 0 정상 · 1 주의 · 2 경고 · 3 위험): `risk lv_load lv_cog lv_move lv_c1 lv_c2 risk_text`,
   `load_kg measured_kg cog_x_mm cog_y_mm cog_pred_x_mm cog_pred_y_mm c1_min_N c2_min_N`
+- 벨트 누름 (`pi/analysis/belt_fit.py`): `c1_k c1_px_mm c1_py_mm c2_k c2_px_mm c2_py_mm`. 벨트 칸의 장력 아래에 `K x y` 로 보인다 (자리를 아직 모르면 `—`). `twin_server.py` 가 `sensors.belts[].k · x_mm · y_mm` 로 넘긴다
 - 있으면 더 정확: `cog_static_x_mm cog_static_y_mm` (하중 이동을 뺀 무게중심 — 카메라 · 판 위치 맞춤에 씀), `rated_kg load_pct risk_overall`
 - 이유 문구: `check_text` (`{load, cog, move, c1, c2: Check.text}`). 없으면 `risk_text` 를 나눠 쓴다. 이유 음성을 고르는 데 쓴다
 - 모드: `mode` (`load` 적재 · `drive` 주행). 적재 모드면 경고음 · 주의음을 내지 않는다. 없으면(옛 송신기 · 녹화 재생)
@@ -83,6 +87,8 @@ cd display/twin
 - 왼쪽 막대: 홈, 보기 모드(기본 · 투시 · 분해 · 센서), 무게중심 지도(판을 위에서, 팀 판정 구역), 기울기
 - 오른쪽 막대: 시점, 화면 멈춤, 적재 · 주행 (지금 모드를 글자로, 누르면 바뀐다), 기준 재설정, 음량
 - 아래 다섯 칸: 적재 · 무게중심 · 화물 이동 · 앞 벨트 · 뒤 벨트 (누르면 자세히)
+- 화물 모양 (`stack_layers.ObjectMemory`): 물건마다 번호 · 크기를 고정하고 위치와 윗면 높이는 프레임마다 높이맵에서 찾는다. 다른 물건에 덮인 상자는 안 움직인다.
+  놓을 때 늘어난 무게가 350 g ~ 2.3 kg 미만이면 물통 (무게가 안정되면 바로, 약 1 초). 장력이 같이 변한 무게는 벨트라 안 친다 (판 앞뒤 방향으로 눕힌 2 L, 지름 11 cm x 길이 31 cm 고정). 물건이 생기고 옮겨지고 없어질 때마다 `logs/errors.log` 에 한 줄
 - 소리 (USB 스피커): 단계 소리 + 이유 음성. 알림이 새로 뜨거나 단계가 오를 때 한 번
   - 위험 = 빠른 '삐삐삐' x4 + '위험 위험', 경고 = '삐빅' x3 + '경고 경고', 주의 = '띵-동' + '주의 주의'
   - 이어서 이유 (`twin_server.reason_clip`): 과적입니다 · 화물이 앞쪽/뒤쪽/왼쪽/오른쪽으로 쏠렸습니다 · 화물이 이동했습니다 ·

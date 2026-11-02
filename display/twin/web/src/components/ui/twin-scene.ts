@@ -93,8 +93,10 @@ type BlockMesh = {
   tint: THREE.Color
   /** 지금 화면에 보이는 모양 (목표를 향해 따라감) */
   cur: ShapeExtent | null
+  /** 이 블록이 맡은 물건 번호 (서버 box.id). 같은 번호는 늘 같은 블록 */
+  bid: number | null
 }
-type ShapeExtent = { x0: number; x1: number; z0: number; z1: number; top: number; bottom: number; thin: boolean; kind: 'box' | 'side' | 'item' | 'bottle'; color: [number, number, number]; alert: boolean }
+type ShapeExtent = { id: number | null; x0: number; x1: number; z0: number; z1: number; top: number; bottom: number; thin: boolean; kind: 'box' | 'side' | 'item' | 'bottle'; color: [number, number, number]; alert: boolean }
 type Strap = {
   key: 'c1' | 'c2'
   ribbon: THREE.Mesh
@@ -370,6 +372,9 @@ export function initTwinScene(host: HTMLElement, tagLayer: HTMLElement, opts: Sc
       }),
     })
   )
+  const imuMat = std(0x1f5fbf, 0.15, 0.55)
+  /** IMU 자리 (판 뒤쪽 가장자리 안쪽, +z 가 뒤) */
+  const imuZ = () => (W + MARGIN * 2 + 0.03) / 2 - 0.022
   let plateMeshes: THREE.Object3D[] = []
   function buildPlate() {
     for (const o of plateMeshes) plateGroup.remove(o)
@@ -410,6 +415,8 @@ export function initTwinScene(host: HTMLElement, tagLayer: HTMLElement, opts: Sc
     const front = mesh(geo('frontMark', () => new THREE.PlaneGeometry(0.1, 0.025)), frontMat, plateGroup, 0, PLATE_TOP + 0.0006, -pd / 2 + 0.017, false)
     front.rotation.x = -Math.PI / 2
     add(front)
+    // IMU (MPU-6050): 판 뒤쪽 가장자리 가운데에 붙은 파란 기판
+    add(mesh(rbox(0.026, 0.004, 0.02, 0.001), imuMat, plateGroup, 0, PLATE_TOP + 0.002, imuZ(), false))
     feet.forEach((f) => f.group.position.set(((f.id.endsWith('E') ? 1 : -1) * L) / 2, 0, ((f.id.startsWith('S') ? 1 : -1) * W) / 2))
     shadowDirty = true
   }
@@ -692,12 +699,13 @@ ${
       }
   }
 
-  /** 눕힌 페트병 하나: 몸통 · 어깨 · 목 · 뚜껑. 긴 쪽이 병 길이, 뚜껑은 + 쪽 (z 면 뒤, x 면 오른쪽) */
+  /** 페트병 하나: 몸통 · 어깨 · 목 · 뚜껑. 높이가 바닥보다 훨씬 크면 세운 병 (뚜껑 위),
+   *  아니면 눕힌 병: 긴 쪽이 병 길이, 뚜껑은 + 쪽 (z 면 뒤, x 면 오른쪽) */
   function buildBottle(b: BlockMesh, w: number, h: number, d: number) {
     for (const o of [...b.extra.children]) b.extra.remove(o)
-    const along = d >= w ? 'z' : 'x'
-    const len = along === 'z' ? d : w
-    const r = +(Math.min(h, along === 'z' ? w : d) / 2).toFixed(3)
+    const along = h > Math.max(w, d) * 1.5 ? 'y' : d >= w ? 'z' : 'x'
+    const len = along === 'y' ? h : along === 'z' ? d : w
+    const r = +((along === 'y' ? Math.min(w, d) : Math.min(h, along === 'z' ? w : d)) / 2).toFixed(3)
     const L = +len.toFixed(3)
     const parts: [THREE.BufferGeometry, THREE.Material, number][] = [
       [cylG(r, +(L * 0.7).toFixed(3), 24), bottleMat, -L * 0.15],
@@ -707,7 +715,9 @@ ${
     ]
     for (const [g, m, off] of parts) {
       const o = mesh(g, m, b.extra, 0, 0, 0, true)
-      if (along === 'z') {
+      if (along === 'y') {
+        o.position.set(0, off, 0)
+      } else if (along === 'z') {
         o.rotation.x = Math.PI / 2
         o.position.set(0, 0, off)
       } else {
@@ -720,7 +730,7 @@ ${
   /** 카메라 -> 판 위치 맞춤 (서버가 로드셀 무게중심으로 낸 값). 없으면 옛 고정값 */
   let reg = { cx: CAM_CX, cy: CAM_CY }
   /** 서버에서 온 목표 모양 (판 좌표). 화면은 이걸 향해 부드럽게 움직인다 */
-  let targets: Extent[] = []
+  let targets: (Extent | undefined)[] = []
   const unitBox = track(new THREE.BoxGeometry(1, 1, 1))
   const unitEdges = track(new THREE.EdgesGeometry(unitBox))
   const KIND_ORDER = { box: 0, side: 1, item: 2, bottle: 3 } as const
@@ -729,6 +739,7 @@ ${
   function setBlocks(boxes: TwinBox[], base: number) {
     // 블록 -> 판 좌표 (카메라 x 오른쪽, y 앞 -> 판 X, Z(뒤 +))
     const ex: Extent[] = boxes.map((b) => ({
+      id: b.id ?? null,
       x0: b.x0 - reg.cx,
       x1: b.x1 - reg.cx,
       z0: -(b.y1 - reg.cy),
@@ -749,9 +760,8 @@ ${
       e.bottom = Math.max(e.bottom, t + 0.0005)
       e.top = Math.max(e.top, e.bottom + 0.006)
     }
-    // 블록 자리는 '종류 · 아래부터' 순서로 고정 -> 같은 상자는 늘 같은 블록 (서버 순서가 바뀌어도 다른 상자로 바뀌어 보이지 않게)
+    // 번호 없는 상자는 '종류 · 아래부터' 순서로 블록 자리를 고른다
     ex.sort((a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind] || Number(a.thin) - Number(b.thin) || a.bottom - b.bottom || a.x0 - b.x0)
-    targets = ex
     while (blocks.length < ex.length) {
       const group = new THREE.Group()
       cargo.add(group)
@@ -768,14 +778,29 @@ ${
       const extra = new THREE.Group()
       group.add(extra)
       const itemMat = std(0xeceae4, 0, 0.62)
-      blocks.push({ group, sg, body, heat, edges, edgeMat, mats, itemMat, extra, key: '', thin: false, kind: 'box', tint: new THREE.Color(1, 1, 1), cur: null })
+      blocks.push({ group, sg, body, heat, edges, edgeMat, mats, itemMat, extra, key: '', thin: false, kind: 'box', tint: new THREE.Color(1, 1, 1), cur: null, bid: null })
     }
+    // 같은 번호는 늘 같은 블록: 물건 하나를 빼도 나머지 블록은 그대로 (순서로 고르면 뒤 물건들이 앞 블록으로 밀려 전부 모양이 바뀌어 보인다)
+    const slots: (Extent | undefined)[] = blocks.map((b) => (b.bid === null ? undefined : ex.find((e) => e.id === b.bid)))
+    slots.forEach((e, i) => {
+      if (e && slots.indexOf(e) !== i) slots[i] = undefined // 번호가 겹치면 한 블록만
+    })
+    for (const e of ex) {
+      if (slots.includes(e)) continue
+      const i = blocks.findIndex((_, k) => !slots[k])
+      if (blocks[i].bid !== e.id) blocks[i].cur = null // 다른 물건이 쓰던 블록: 그 모양에서 변하지 않고 바로 제자리에
+      blocks[i].bid = e.id
+      slots[i] = e
+    }
+    targets = slots
+    const firstBox = ex.find((q) => !q.thin && q.kind === 'box')
     if (mode !== 'normal') applyModeMaterials()
     blocks.forEach((b, i) => {
-      const e = ex[i]
+      const e = slots[i]
       if (!e) {
         b.group.visible = false
         b.cur = null
+        b.bid = null
         return
       }
       if (b.kind !== e.kind || b.thin !== e.thin || !b.cur) {
@@ -801,7 +826,7 @@ ${
       if (!e.thin && e.kind === 'box') {
         kraftTint(e.color, b.tint)
         b.mats.forEach((m) => m.color.copy(b.tint))
-        if (!ex.slice(0, i).some((q) => !q.thin && q.kind === 'box')) flapMat.color.copy(b.tint)
+        if (e === firstBox) flapMat.color.copy(b.tint)
       }
       b.group.visible = true
     })
@@ -1832,6 +1857,9 @@ ${
         const p = f.group.position
         want.push({ id: f.id, lv: null, anchor: local(p.x, FOOT_H * 0.5, p.z), side: f.id.endsWith('E') ? 1 : -1, html: `<i class="ic">${ICON_SVG('weight')}</i><b>${names[f.id]} <em>${(Math.max(0, g) / 1000).toFixed(1)} kg</em></b>` })
       }
+      // IMU 자리 (판 뒤쪽). 값은 오른쪽 위 IMU 카드
+      const deg = st.sensors.roll === null ? null : Math.hypot(st.sensors.roll, st.sensors.pitch ?? 0)
+      want.push({ id: 'imu', lv: null, anchor: local(0, PLATE_TOP + 0.004, imuZ()), side: 1, html: `<i class="ic">${ICON_SVG('gauge')}</i><b>IMU <em>${deg === null ? '—' : `기울기 ${deg.toFixed(1)}°`}</em></b>` })
     }
     // 분해 모드: 층마다 높이
     if (mode === 'explode' && explodeT > 0.5) {

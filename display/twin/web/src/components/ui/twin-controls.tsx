@@ -115,6 +115,7 @@ function Tile({ c, on, dim, onPick }: { c: CheckView; on: boolean; dim: boolean;
         <b>{dim ? '—' : c.value}</b>
         {!dim && c.unit && <small>{c.unit}</small>}
       </div>
+      {!dim && c.sub && <div className="tw-tile-sub">{c.sub}</div>}
       <div className="tw-tile-bar">
         {!dim && c.ratio !== null && <i style={{ transform: `scaleX(${Math.min(1, c.ratio)})` }} />}
         {!dim && c.mark !== null && <s style={{ left: `${c.mark * 100}%` }} />}

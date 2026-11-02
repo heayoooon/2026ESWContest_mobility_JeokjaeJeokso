@@ -442,7 +442,7 @@ class StableBoxMesh(ModelMesh):
     입력이 그대로면 상자를 다시 맞추지 않는다 -> 화물이 실제로 바뀌기 전까지 형태가 고정된다.
     """
     REFIT = 3                                            # 입력이 바뀐 뒤 몇 프레임 맞춘다 (cargo_model 은 2번 연속 보여야 상자로 인정)
-    REFIT_FRAC = .08                                     # 마지막으로 맞춘 depth 대비 이 비율 넘게 (2.5 cm 이상) 바뀌어야 다시 맞춘다
+    REFIT_FRAC = .03                                     # 마지막으로 맞춘 depth 대비 이 비율 넘게 (2.5 cm 이상) 바뀌어야 다시 맞춘다 (흔들림은 ObjectMemory 가 거른다)
 
     def __init__(self):
         super().__init__()
