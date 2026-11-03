@@ -113,6 +113,7 @@ cd display/twin
 
 카메라와 적재판의 위치 관계는 `run/reg.json` 에 고정돼 있다 (지금 값 = 합판 실측 가운데 cx -.015, cy .35). 카메라를 옮기면 이 파일을 지운다:
 서버가 "가감속 없을 때 카메라로 본 화물 중심 = 로드셀 무게중심" 이 되게 다시 배워 저장한다.
+합판 · 로드셀 자리는 이것과 따로 박혀 있어서 다시 재서 같이 고친다: `server/stack_layers.py` 의 `CELL_CX CELL_CY PLATE_*`, `web/.../twin-scene.ts` 의 `PLATE_CAM IMU_CAM`, `isaac_sim/scripts` 의 판 끝 `.63`.
 
 ## 화면 고치기 (PC)
 

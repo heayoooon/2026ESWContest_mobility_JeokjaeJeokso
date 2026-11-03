@@ -1621,7 +1621,7 @@ ${
     let mz = hasCog && hasPred ? cogGoal.y - predGoal.y : 0
     if (/지금 정상/.test(moveReason)) mx = mz = 0      // 경보를 붙잡고 있을 뿐 지금은 허용 안: 남은 차이는 흔들림이라 어느 쪽도 칠하지 않는다
     else if (Math.hypot(mx, mz) < 0.01) {              // 1 cm 밑은 방향을 모른다: 문구가 1 cm 넘는 값으로 붙잡혀 있을 때만 그 방향
-      const said = Number(/([d.]+)s*mm/.exec(moveReason)?.[1] ?? 0)
+      const said = Number(/([\d.]+)\s*mm/.exec(moveReason)?.[1] ?? 0)
       mz = said < 10 ? 0 : /앞쪽/.test(moveReason) ? -1 : /뒤쪽/.test(moveReason) ? 1 : 0
       mx = said < 10 ? 0 : /왼쪽/.test(moveReason) ? -1 : /오른쪽/.test(moveReason) ? 1 : 0
     }
