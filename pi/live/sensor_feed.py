@@ -40,7 +40,7 @@ r1 = lambda v, d=1: None if v is None else round(float(v), d)  # noqa: E731
 
 JUDGE = ['mode', 'algo', 'risk', 'risk_overall', 'lv_load', 'lv_cog', 'lv_move', 'lv_c1', 'lv_c2', 'risk_text', 'load_kg', 'measured_kg',
          'rated_kg', 'cog_x_mm', 'cog_y_mm', 'cog_pred_x_mm', 'cog_pred_y_mm', 'cog_static_x_mm', 'cog_static_y_mm',
-         'h_x_mm', 'h_y_mm', 'c1_min_N', 'c2_min_N', 'tension_max_N', 'cog_x_pct', 'cog_y_pct',
+         'h_x_mm', 'h_y_mm', 'h_x_fixed', 'h_y_fixed', 'c1_min_N', 'c2_min_N', 'tension_max_N', 'cog_x_pct', 'cog_y_pct',
          'c1_k', 'c1_px_mm', 'c1_py_mm', 'c1_steps', 'c2_k', 'c2_px_mm', 'c2_py_mm', 'c2_steps']  # 벨트 누름 계수 · 자리 추정 (belt_fit.py)
 IMU_F = ['ax_G', 'ay_G', 'az_G', 'gx_dps', 'gy_dps', 'gz_dps', 'roll_deg', 'pitch_deg']
 
@@ -79,6 +79,7 @@ def row(f, res, cfg, mode):
         cog_pred_x_mm=r1(tr.pred_x) if tr else None, cog_pred_y_mm=r1(tr.pred_y) if tr else None,
         cog_static_x_mm=r1(tr.static_x) if tr else None, cog_static_y_mm=r1(tr.static_y) if tr else None,
         h_x_mm=r1(abs(tr.kx)) if tr and tr.kx is not None else None, h_y_mm=r1(abs(tr.ky)) if tr and tr.ky is not None else None,
+        h_x_fixed=int(tr.fixed_x) if tr else None, h_y_fixed=int(tr.fixed_y) if tr else None,     # 1 = 학습 후 고정 (COG_H_FREEZE)
         c1_min_N=r1(res.tension_min.get('c1'), 2), c2_min_N=r1(res.tension_min.get('c2'), 2),
         tension_max_N=cfg.tension_max)
     for k, b in res.belts.items():                       # 벨트 누름 계수 · 자리 추정. 위치를 모르는 벨트는 k 만. steps 0 = 시작값
@@ -202,6 +203,7 @@ def main():
     w = None
     last_flush = last_print = 0.0
     n = 0
+    h_fixed = (None, None)                              # 지난 프레임의 학습 후 고정 h (좌우, 앞뒤). 바뀔 때 한 줄
     print('센서 -> 127.0.0.1:%d, 기록 %s' % (args.port, path), flush=True)
     threading.Thread(target=control_listener, daemon=True).start()
     threading.Thread(target=mode_listener, daemon=True).start()
@@ -221,6 +223,14 @@ def main():
                 log.info('기준 재설정 (%d번째)', analyze.rebase_n)
             flag_edges(edge, f.flags)
             res = analyze(f)
+            if analyze.transfer:
+                now_fixed = (analyze.transfer.x.fixed, analyze.transfer.y.fixed)
+                if now_fixed != h_fixed:
+                    txt = ' '.join('%s %s' % (name, '%.0fmm 고정' % abs(k) if k is not None else '학습 중')
+                                   for name, k in zip(('좌우', '앞뒤'), now_fixed))
+                    print('h -> %s' % txt, flush=True)
+                    log.info('h -> %s', txt)
+                    h_fixed = now_fixed
             s = row(f, res, cfg, analyze.mode)
             msg = json.dumps(s, ensure_ascii=False, separators=(',', ':')).encode()
             out.sendto(msg, ('127.0.0.1', args.port))

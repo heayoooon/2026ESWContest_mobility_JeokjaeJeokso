@@ -73,6 +73,9 @@ HX711
                (2026-10-04 실측에서 맞춘 h: 앞뒤 155~204mm, 좌우 132~190mm. 시작값은 학습이 곧 끌어내려서 190 이든 150 이든 결과가 같다.
                 고정할 때는 190 이 10/15 우회전 급커브에서 오경보를 내고 150 은 0 이라서 150)
                (주행이 없는 시연에서는 학습이 손작업 잡음만 배운다. 2026-10-15 실측에서 h 가 190 -> 74~137 로 내려갔다)
+  COG_H_FREEZE  주행 모드에서 h 를 학습하다가 축마다 충분히 모이면 그 값으로 고정할지 (COG_H_LEARN=1 일 때만).   기본 1
+               1 이면 고정 (장력 벨트 추정을 주행 전환 때 확정하는 것처럼), 0 이면 예전처럼 주행 내내 계속 학습한다.
+               고정 조건은 transfer.py 의 FREEZE_N(맞춤 점 수) · FREEZE_SXX(가감속 제곱합). 기준 재설정 · 화물 내림 · 위험 확정이면 풀고 다시 배운다
   JUDGE_IMU   하중 이동 예측 · 무게 보정에 쓸 IMU 라벨 (차체에 붙은 것)  기본 IMU 라벨 첫 번째
   TENSION_A    벨트가 버텨야 할 가감속(G)                       기본 0.5
   TENSION_MU   화물-바닥 마찰계수                                기본 0.5
@@ -197,6 +200,7 @@ class Config:
         self.cog_lag = _float("COG_LAG", 0.2)
         self.cog_h_learn = _int("COG_H_LEARN", 1)
         self.cog_h = H_START_MM if self.cog_h_learn else H_FIXED_MM     # 학습하면 시작값, 끄면 고정값
+        self.cog_h_freeze = _int("COG_H_FREEZE", 1)
         self.judge_imu = _str("JUDGE_IMU", self.imu_labels[0] if self.imu_labels else "")
         self.tension_a = _float("TENSION_A", 0.5)
         self.tension_mu = _float("TENSION_MU", 0.5)
@@ -284,6 +288,8 @@ class Config:
             raise SystemExit("MOVE_LATCH 는 0(저절로 풀림) 또는 1(기준 재설정까지 유지): %d" % self.move_latch)
         if self.cog_h_learn not in (0, 1):
             raise SystemExit("COG_H_LEARN 은 0(학습 끔, h 고정) 또는 1(학습): %d" % self.cog_h_learn)
+        if self.cog_h_freeze not in (0, 1):
+            raise SystemExit("COG_H_FREEZE 는 0(주행 내내 학습) 또는 1(학습 후 고정): %d" % self.cog_h_freeze)
         if not self.cog_h_learn and not self.bed_l:
             raise SystemExit("COG_H_LEARN=0 이면 h 를 %g mm 로 고정하는데, mm 단위라서 BED_L/BED_W 가 필요하다" % H_FIXED_MM)
         if self.judge_imu and self.judge_imu not in self.imu_labels:
@@ -391,9 +397,10 @@ class Config:
                          "최근 %gs 의 %g%% 이상일 때" % (
                              self.judge_imu or "없음", self.cog_resid, self.cog_resid_a, transfer.E_CAUTION,
                              transfer.E_WARNING, transfer.E_DANGER, self.move_win_s, 100 * self.move_alpha))
-            lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h %s %s)" % (
+            lines.append("                  %gs 이어지면 경고, %gs 이어지면 위험 (지연 %.1fs, h %s %s%s)" % (
                 self.move_confirm_s, self.move_danger_s, self.cog_lag, "시작" if self.cog_h_learn else "고정(학습 끔)",
-                "%gmm" % self.cog_h if self.bed_l else "없음 -> 데이터로만"))
+                "%gmm" % self.cog_h if self.bed_l else "없음 -> 데이터로만",
+                ", 주행 중 학습 후 고정 (COG_H_FREEZE=1)" if self.cog_h_learn and self.cog_h_freeze else ""))
             lines.append("                  경고 이상은 %s" % ("기준 재설정까지 유지 (MOVE_LATCH=1)" if self.move_latch
                                                          else "저절로 풀림 (MOVE_LATCH=0)"))
         sides = self.belt_sides()

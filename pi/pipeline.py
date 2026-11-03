@@ -66,7 +66,8 @@ def status_text(frame, result, cam_rows):
         show.append("CoG %.0f,%.0f%s" % (c.x, c.y, c.unit))
     tr = result.transfer
     if tr and tr.ky is not None and tr.kx is not None:
-        show.append("h 앞뒤%.0f 좌우%.0f%s" % (abs(tr.ky), abs(tr.kx), "mm" if c and c.unit == "mm" else "%/G"))
+        show.append("h 앞뒤%.0f%s 좌우%.0f%s%s" % (abs(tr.ky), "(고정)" if tr.fixed_y else "", abs(tr.kx),
+                                                 "(고정)" if tr.fixed_x else "", "mm" if c and c.unit == "mm" else "%/G"))
     tension = {l: v for l, v in frame.tension_n.items() if v is not None}
     show += ["%s %.1fN%s" % (l, v, "(>=%.1f)" % result.tension_min[l] if result.tension_min.get(l) else "")
              for l, v in tension.items()]

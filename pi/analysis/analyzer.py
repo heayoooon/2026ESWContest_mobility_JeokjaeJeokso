@@ -86,14 +86,18 @@ class Analyzer:
         self.rebase_n = 0                       # 기준 재설정을 받은 횟수
         self.move_latch_on = bool(cfg.move_latch)
         self.move_latch = None                  # 붙잡고 있는 화물 이동 최고 단계 (경고 이상). 기준 재설정이 지운다
-        self.mode = "load"                      # 적재 / 주행 (set_mode). 벨트 추정과 화물 이동 새 자리 받아들이기가 다르다
+        self.h_freeze_on = bool(cfg.cog_h_freeze) and bool(cfg.cog_h_learn)    # 주행 중 학습한 h 를 고정할지 (transfer.py)
+        self.mode = "load"                   # 적재 / 주행 (set_mode). 벨트 추정과 화물 이동 새 자리 받아들이기가 다르다
         self._spot_switch()
 
     def _spot_switch(self):
         """주행 모드에서는 이동한 화물의 새 자리를 기준으로 받아들이지 않는다 (MOVE_LATCH=1). 적재 모드는 싣고 내리는 중이라 받아들인다.
-        MOVE_LATCH=0 이면 모드와 상관없이 예전처럼 받아들인다."""
+        MOVE_LATCH=0 이면 모드와 상관없이 예전처럼 받아들인다.
+        h 학습 후 고정(COG_H_FREEZE=1)도 주행 모드에서만 한다. 적재 모드의 손작업은 h 로 배울 거리가 아니고,
+        적재 -> 주행 전환의 rebase 가 학습한 h 를 버리므로 주행마다 처음부터 다시 배워 고정한다."""
         if self.transfer:
             self.transfer.accept_new_spot = self.mode == "load" or not self.move_latch_on
+            self.transfer.freeze = self.h_freeze_on and self.mode == "drive"
 
     def set_mode(self, mode):
         """적재("load") / 주행("drive"). 바뀌었으면 True.

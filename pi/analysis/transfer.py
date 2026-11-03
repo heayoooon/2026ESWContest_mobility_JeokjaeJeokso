@@ -14,6 +14,9 @@ COG_H_LEARN=0 이면 이 학습을 끄고 h 를 고정값(config 의 H_FIXED_MM)
 화물이 달라졌다고 볼 때는 학습한 h 를 버리고 시작값으로 돌아간다: 화물 이동이 위험으로 확정된 순간, 그리고 화물을
 내려서 무게중심이 RESET_S 초 넘게 안 나올 때. 위험이 뜨기 직전 프레임들이 맞춤에 섞여 h 가 튀어 있어도(2026-10-04
 화물추락: 220 -> 337mm) 운전자가 멈추고 다시 묶은 뒤까지 이어지지 않는다.
+학습 후 고정 (COG_H_FREEZE=1, 주행 모드): 장력의 벨트 추정을 적재 -> 주행 때 확정하듯, 축마다 맞춤 점이 FREEZE_N 개 넘게
+모이고 가감속 제곱합이 FREEZE_SXX 를 넘으면 그때의 h 를 고정해 더 고치지 않는다. 그 뒤로는 커브 중 허용 안에서 조금씩
+밀리는 화물이 h 로 흡수되지 않는다. h 를 버리는 때(기준 재설정 · 화물 내림 · 위험 확정)에는 고정도 풀고 다시 학습한다.
 
 화물 이동 판정: 잔차 = 실측 - 예측. 가감속으로 설명 안 되는 무게중심 변화 = 화물이 미끄러지거나 쓰러지거나
 떨어진 것. 세 단계로 거른다.
@@ -55,6 +58,9 @@ REBASE_MUTE_S = 1.0 # 초. 기준 재설정(rebase) 직후 이만큼은 화물 �
                     # 쓰러짐 직전에 누른 경우를 놓친다 (0.5초 전에 누르면 1초는 놓치고 0.5초 보류는 잡는다, 3초는 2초 전까지 놓친다)
 K_MAX = 1.0         # |k| 상한 = 셀 간격 x K_MAX (/G). 이상한 점 몇 개에 h 가 튀지 않게
                     # (2026-10-04 화물추락: 추락 뒤 이동량이 맞춤에 섞여 h_y 가 556mm 까지 튀었다. 정상은 132~220mm)
+FREEZE_N = 20       # 학습 후 고정: 축마다 맞춤 점(|a| >= A_FIT 프레임)이 이만큼 넘게 모이고
+FREEZE_SXX = 1.0    # G^2. 가감속 제곱합(FORGET 반영)이 이만큼 넘으면 그때의 h 로 고정 (0.25G 1초 가감속 두 번쯤, 0.1G 로는 10초)
+                    # 한 번의 가감속만으로 고정하면 그때 화물이 조금 밀린 것이 그대로 굳는다
 
 # --- 화물 이동 판정 ---------------------------------------------------------
 E_CAUTION, E_WARNING, E_DANGER = 1.0, 1.4, 1.8   # 허용의 몇 배부터 주의 / 경고 / 위험인가
@@ -73,6 +79,8 @@ class Transfer:
     static_y: float | None = None
     e: float | None = None          # 잔차 / 허용 (두 축 중 큰 쪽). 1 이면 허용만큼
     t_slip: float = 0.0             # 초. 화물 이동(주의 이상)이 이어진 시간
+    fixed_x: bool = False           # 학습 후 고정한 h 인가 (COG_H_FREEZE). False 면 아직 학습 중
+    fixed_y: bool = False
 
 
 class _Axis:
@@ -85,6 +93,8 @@ class _Axis:
         self.thr = span * resid_pct / 100       # 정지 때 잔차 허용 (CoG 단위)
         self.k0 = k0
         self.sxy = self.sxx = 0.0
+        self.n = 0                              # 맞춤 점 수
+        self.fixed = None                       # 학습 후 고정한 k (COG_H_FREEZE). None 이면 학습 중
         self.c0 = self.a0 = None                # 기준 무게중심, 기준 가속도
 
     def thr_at(self, a_mag):
@@ -92,6 +102,8 @@ class _Axis:
         return self.span * (self.resid + self.resid_a * a_mag) / 100
 
     def k(self):
+        if self.fixed is not None:
+            return self.fixed
         if self.k0 is not None:
             k = (PRIOR_W * self.k0 + self.sxy) / (PRIOR_W + self.sxx)
         elif self.sxx >= PRIOR_W:
@@ -104,10 +116,18 @@ class _Axis:
     def fit(self, da, dc):
         self.sxy = FORGET * self.sxy + da * dc
         self.sxx = FORGET * self.sxx + da * da
+        self.n += 1
+
+    def try_freeze(self):
+        """맞춤 점이 충분히 모였으면 지금 k 를 고정한다."""
+        if self.fixed is None and self.n >= FREEZE_N and self.sxx >= FREEZE_SXX:
+            self.fixed = self.k()
 
     def forget_fit(self):
-        """학습한 h 를 버린다. k() 는 다시 시작값 k0 에서 출발한다."""
+        """학습한 h 를 버린다 (고정도 푼다). k() 는 다시 시작값 k0 에서 출발한다."""
         self.sxy = self.sxx = 0.0
+        self.n = 0
+        self.fixed = None
 
 
 class TransferCheck:
@@ -119,6 +139,7 @@ class TransferCheck:
         self.x = _Axis(span_x, k0, cfg.cog_resid, cfg.cog_resid_a)
         self.y = _Axis(span_y, k0, cfg.cog_resid, cfg.cog_resid_a)
         self.learn = bool(cfg.cog_h_learn)      # False 면 h 를 학습하지 않고 고정값(H_FIXED_MM)으로 둔다
+        self.freeze = False                     # True 면 학습이 모인 축부터 h 를 고정한다 (analyzer 가 주행 모드 + COG_H_FREEZE=1 에서 켠다)
         self.win_s = cfg.move_win_s             # 최근 구간 길이(초)
         self.alpha = cfg.move_alpha             # 구간 안에서 이 비율 이상이어야 그 단계
         self.confirm_s = cfg.move_confirm_s     # T_slip 이 이만큼이면 최소 경고
@@ -176,7 +197,8 @@ class TransferCheck:
                 X.a0, Y.a0 = ay, ax
                 X.c0, Y.c0 = c.x, c.y
                 self.prev_t = t
-                out = Transfer(c.x, c.y, X.k(), Y.k(), static_x=c.x, static_y=c.y, e=0.0)
+                out = Transfer(c.x, c.y, X.k(), Y.k(), static_x=c.x, static_y=c.y, e=0.0,
+                               fixed_x=X.fixed is not None, fixed_y=Y.fixed is not None)
                 return out, Check("move", "화물 이동", OK, "기준 재설정 중 (%.1f초 남음)" % (self.mute_until - t))
             self.mute_until = None
         if X.a0 is None:
@@ -194,11 +216,15 @@ class TransferCheck:
         e = max(abs(rx) / thr_x, abs(ry) / thr_y)       # 가속을 반영한 허용의 몇 배인가
 
         # h 맞춤: 가감속이 충분하고 화물 이동으로 안 보일 때만 (COG_H_LEARN=0 이면 안 한다 -> h 는 고정값 그대로)
+        # 학습 후 고정한 축은 더 맞추지 않는다
         if self.learn and e < E_WARNING:
-            if abs(day) >= A_FIT:
+            if abs(day) >= A_FIT and X.fixed is None:
                 X.fit(day, c.x - X.c0)
-            if abs(dax) >= A_FIT:
+            if abs(dax) >= A_FIT and Y.fixed is None:
                 Y.fit(dax, c.y - Y.c0)
+            if self.freeze:
+                X.try_freeze()
+                Y.try_freeze()
 
         # 기준 따라가기: 최근 COG_LAG 초 동안 가감속 · 회전이 없을 때만
         quiet = all(abs(a_y - X.a0) < A_QUIET and abs(a_x - Y.a0) < A_QUIET and gz < GZ_QUIET
@@ -225,7 +251,8 @@ class TransferCheck:
                 Y.c0 = sum(s[2] for s in self.settle) / len(self.settle)
                 self.settle = []
 
-        out = Transfer(px, py, kx, ky, static_x=sx, static_y=sy, e=e)
+        out = Transfer(px, py, kx, ky, static_x=sx, static_y=sy, e=e,
+                       fixed_x=X.fixed is not None, fixed_y=Y.fixed is not None)
         if (kx is None and abs(day) >= A_QUIET) or (ky is None and abs(dax) >= A_QUIET):
             return out, Check("move", "화물 이동", None, "h 추정 중")
 
