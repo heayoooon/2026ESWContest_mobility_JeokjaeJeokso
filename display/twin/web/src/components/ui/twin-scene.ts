@@ -1,10 +1,11 @@
 // 화물 적재 디지털 트윈 — three.js 장면 (agentic-factory-3d 의 만듦새: 방 조명 PMREM, ACES, 부드러운 그림자, 접지 그림자, 금속 판)
 //
-// 좌표 (미터, Y 가 위). X = 오른쪽, Z = 뒤(+Z, 기본 시점 쪽), 앞 = -Z.
+// 좌표 (미터, Y 가 위). X = 오른쪽, Z = 뒤(+Z, 기본 시점 쪽), 앞 = -Z. 카메라 가까운 쪽이 트럭 앞이다 (사용자 확인 2026-11-04)
 //   로드셀 NW=앞 왼쪽(-X,-Z) NE=앞 오른쪽(+X,-Z) SW=뒤 왼쪽(-X,+Z) SE=뒤 오른쪽(+X,+Z). 간격 = sensors.bed_mm (250 x 392 mm)
+//     센서 파이 이름 그대로다: N 줄 · c1 (앞 벨트) 이 카메라 쪽, E 가 카메라 왼쪽 (녹화의 무게 변화로 확인)
 //   무게중심 cog_mm (앞왼 셀 원점, x 좌->우, y 앞->뒤) -> X = -l/2 + x, Z = -w/2 + y
-//   카메라 블록 (월드 x 오른쪽, y 앞, z 위) -> X = x - CAM_CX, Z = -(y - CAM_CY), Y = 판 윗면 + (z - base)
-//   카메라와 판 · 로드셀 · 벨트의 위치 관계는 잰 적이 없다 (도식). CAM_CX/CY 는 화물이 판 가운데쯤 오게 고른 값.
+//   카메라 블록 (x 카메라 오른쪽, y 카메라에서 멀어지는 쪽 = 뒤, z 위) -> X = -(x - CAM_CX), Z = y - CAM_CY, Y = 판 윗면 + (z - base)
+//   CAM_CX/CY = 합판 실측 가운데. 로드셀 사각형 가운데도 여기다 (녹화의 무게중심 변화로 2 cm 안에서 확인)
 import * as THREE from 'three'
 import { currentFrame, renderPixelRatio } from '@/lib/display-frame'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
@@ -42,12 +43,21 @@ export type SceneHandle = {
 export type SceneOptions = { onReady?: () => void; onError?: (msg: string) => void }
 
 const FONT = `'Nanum Gothic', sans-serif`
-const CAM_CX = -0.03
-const CAM_CY = 0.3
+const CAM_CX = -0.015
+const CAM_CY = 0.35
 const FOOT_H = 0.05
 const PLATE_T = 0.014
 const PLATE_TOP = FOOT_H + PLATE_T
 const MARGIN = 0.03 // 셀 바깥 판 여유
+/** 실제 합판 자리 (카메라 좌표 m, 2026-11-03 높이맵 실측. 가까운 쪽 끝은 시야가 끝나는 곳까지 확인). 로드셀 간격 L, W 와 따로다 */
+const PLATE_CAM = { x0: -0.245, x1: 0.215, y0: 0.07, y1: 0.63 }
+const PLATE_W = PLATE_CAM.x1 - PLATE_CAM.x0
+const PLATE_D = PLATE_CAM.y1 - PLATE_CAM.y0
+const HOOK_X = PLATE_W / 2 - 0.03 // 벨트 고리 (판 가운데가 조금 치우쳐서 양쪽 다 합판 안에 들게)
+/** IMU 기판 자리 (카메라 좌표 m, 2026-11-03 사진: 판 먼 쪽 = 뒤쪽 끝) */
+const IMU_CAM = { x: 0.065, y: 0.612 }
+/** 네 구역: 무게중심이 판 가운데에서 이 비율(셀 간격) 안이면 그 축은 가운데로 보고 양쪽 구역을 같이 칠한다 */
+const QUAD_NEAR = 0.1
 const STRAP_W = 0.025
 const N_STRAP = 120
 
@@ -96,7 +106,7 @@ type BlockMesh = {
   /** 이 블록이 맡은 물건 번호 (서버 box.id). 같은 번호는 늘 같은 블록 */
   bid: number | null
 }
-type ShapeExtent = { id: number | null; x0: number; x1: number; z0: number; z1: number; top: number; bottom: number; thin: boolean; kind: 'box' | 'side' | 'item' | 'bottle'; color: [number, number, number]; alert: boolean }
+type ShapeExtent = { id: number | null; cap: 1 | -1; x0: number; x1: number; z0: number; z1: number; top: number; bottom: number; thin: boolean; kind: 'box' | 'side' | 'item' | 'bottle'; color: [number, number, number]; alert: boolean }
 type Strap = {
   key: 'c1' | 'c2'
   ribbon: THREE.Mesh
@@ -247,7 +257,7 @@ export function initTwinScene(host: HTMLElement, tagLayer: HTMLElement, opts: Sc
     c.fillRect(0, 0, w, h)
   })
   const contact = mesh(
-    new THREE.PlaneGeometry(0.62, 0.78),
+    new THREE.PlaneGeometry(0.74, 0.86),
     track(new THREE.MeshBasicMaterial({ map: contactTex, transparent: true, depthWrite: false, opacity: 0.7 })),
     scene,
     0,
@@ -373,23 +383,32 @@ export function initTwinScene(host: HTMLElement, tagLayer: HTMLElement, opts: Sc
     })
   )
   const imuMat = std(0x1f5fbf, 0.15, 0.55)
-  /** IMU 자리 (판 뒤쪽 가장자리 안쪽, +z 가 뒤) */
-  const imuZ = () => (W + MARGIN * 2 + 0.03) / 2 - 0.022
+  /** 합판 가운데 (판 좌표: 로드셀 사각형 가운데가 원점) */
+  const plateX = () => -((PLATE_CAM.x0 + PLATE_CAM.x1) / 2 - reg.cx)
+  const plateZ = () => (PLATE_CAM.y0 + PLATE_CAM.y1) / 2 - reg.cy
+  /** 합판 판 · 빛 · 표시를 담는 묶음 (자리 맞춤 값이 오면 옮긴다). 셀 볼트 · 다리는 로드셀 자리 그대로 */
+  const plateBody = new THREE.Group()
+  plateGroup.add(plateBody)
+  const placePlate = () => plateBody.position.set(plateX(), 0, plateZ())
+  /** IMU 자리 (판 뒤쪽 가장자리 안쪽) */
+  const imuX = () => -(IMU_CAM.x - reg.cx)
+  const imuZ = () => IMU_CAM.y - reg.cy
   let plateMeshes: THREE.Object3D[] = []
   function buildPlate() {
-    for (const o of plateMeshes) plateGroup.remove(o)
+    for (const o of plateMeshes) o.parent?.remove(o)
     plateMeshes = []
-    const pw = L + MARGIN * 2 + 0.03
-    const pd = W + MARGIN * 2 + 0.03
+    placePlate()
+    const pw = PLATE_W
+    const pd = PLATE_D
     const add = (o: THREE.Object3D) => (plateMeshes.push(o), o)
     // 두 겹 판: 아래 밝은 모서리 + 위 무늬 판 (모서리를 깎은 느낌)
-    add(mesh(rbox(pw, PLATE_T * 0.55, pd, 0.004), M.plateEdge, plateGroup, 0, FOOT_H + PLATE_T * 0.275, 0))
-    const top = mesh(rbox(pw - 0.008, PLATE_T * 0.5, pd - 0.008, 0.003), plateTop, plateGroup, 0, FOOT_H + PLATE_T * 0.75, 0)
+    add(mesh(rbox(pw, PLATE_T * 0.55, pd, 0.004), M.plateEdge, plateBody, 0, FOOT_H + PLATE_T * 0.275, 0))
+    const top = mesh(rbox(pw - 0.008, PLATE_T * 0.5, pd - 0.008, 0.003), plateTop, plateBody, 0, FOOT_H + PLATE_T * 0.75, 0)
     add(top)
     treadTex.repeat.set(pw / 0.09, pd / 0.09)
-    add(mesh(rbox(pw - 0.03, 0.006, pd - 0.03, 0.002), M.dark, plateGroup, 0, FOOT_H - 0.002, 0))
+    add(mesh(rbox(pw - 0.03, 0.006, pd - 0.03, 0.002), M.dark, plateBody, 0, FOOT_H - 0.002, 0))
     // 판 위 위험 빛 (히트맵)
-    const heatPlate = mesh(geo('hp' + pw + ',' + pd, () => new THREE.PlaneGeometry(pw, pd)), heatPlateMat, plateGroup, 0, PLATE_TOP + 0.0009, 0, false)
+    const heatPlate = mesh(geo('hp' + pw + ',' + pd, () => new THREE.PlaneGeometry(pw, pd)), heatPlateMat, plateBody, 0, PLATE_TOP + 0.0009, 0, false)
     heatPlate.rotation.x = -Math.PI / 2
     heatPlate.renderOrder = 2
     add(heatPlate)
@@ -400,7 +419,7 @@ export function initTwinScene(host: HTMLElement, tagLayer: HTMLElement, opts: Sc
       [pd, -pw / 2, 0, Math.PI / 2],
       [pd, pw / 2, 0, -Math.PI / 2],
     ] as [number, number, number, number][]) {
-      const c = mesh(geo('hc' + w, () => new THREE.PlaneGeometry(w, CURTAIN_H)), heatCurtainMat, plateGroup, x, PLATE_TOP + CURTAIN_H / 2, z, false)
+      const c = mesh(geo('hc' + w, () => new THREE.PlaneGeometry(w, CURTAIN_H)), heatCurtainMat, plateBody, x, PLATE_TOP + CURTAIN_H / 2, z, false)
       c.rotation.y = ry
       c.renderOrder = 5
       add(c)
@@ -412,11 +431,11 @@ export function initTwinScene(host: HTMLElement, tagLayer: HTMLElement, opts: Sc
         add(mesh(cylG(0.0035, 0.0034, 6), M.dark, plateGroup, (sx * L) / 2, PLATE_TOP + 0.0016, (sz * W) / 2, false))
       }
     // 앞쪽 가장자리: '▲ 앞' 표시 (어느 시점에서든 트럭 앞이 어디인지)
-    const front = mesh(geo('frontMark', () => new THREE.PlaneGeometry(0.1, 0.025)), frontMat, plateGroup, 0, PLATE_TOP + 0.0006, -pd / 2 + 0.017, false)
+    const front = mesh(geo('frontMark', () => new THREE.PlaneGeometry(0.1, 0.025)), frontMat, plateBody, 0, PLATE_TOP + 0.0006, -pd / 2 + 0.017, false)
     front.rotation.x = -Math.PI / 2
     add(front)
-    // IMU (MPU-6050): 판 뒤쪽 가장자리 가운데에 붙은 파란 기판
-    add(mesh(rbox(0.026, 0.004, 0.02, 0.001), imuMat, plateGroup, 0, PLATE_TOP + 0.002, imuZ(), false))
+    // IMU (MPU-6050): 판 뒤쪽 가장자리에 붙은 파란 기판
+    add(mesh(rbox(0.026, 0.004, 0.02, 0.001), imuMat, plateBody, imuX() - plateX(), PLATE_TOP + 0.002, imuZ() - plateZ(), false))
     feet.forEach((f) => f.group.position.set(((f.id.endsWith('E') ? 1 : -1) * L) / 2, 0, ((f.id.startsWith('S') ? 1 : -1) * W) / 2))
     shadowDirty = true
   }
@@ -700,8 +719,8 @@ ${
   }
 
   /** 페트병 하나: 몸통 · 어깨 · 목 · 뚜껑. 높이가 바닥보다 훨씬 크면 세운 병 (뚜껑 위),
-   *  아니면 눕힌 병: 긴 쪽이 병 길이, 뚜껑은 + 쪽 (z 면 뒤, x 면 오른쪽) */
-  function buildBottle(b: BlockMesh, w: number, h: number, d: number) {
+   *  아니면 눕힌 병: 긴 쪽이 병 길이, 뚜껑은 cap 쪽 (1 = + 쪽: z 면 뒤, x 면 오른쪽) */
+  function buildBottle(b: BlockMesh, w: number, h: number, d: number, cap: 1 | -1) {
     for (const o of [...b.extra.children]) b.extra.remove(o)
     const along = h > Math.max(w, d) * 1.5 ? 'y' : d >= w ? 'z' : 'x'
     const len = along === 'y' ? h : along === 'z' ? d : w
@@ -718,11 +737,11 @@ ${
       if (along === 'y') {
         o.position.set(0, off, 0)
       } else if (along === 'z') {
-        o.rotation.x = Math.PI / 2
-        o.position.set(0, 0, off)
+        o.rotation.x = (cap * Math.PI) / 2
+        o.position.set(0, 0, cap * off)
       } else {
-        o.rotation.z = -Math.PI / 2
-        o.position.set(off, 0, 0)
+        o.rotation.z = (-cap * Math.PI) / 2
+        o.position.set(cap * off, 0, 0)
       }
     }
   }
@@ -740,10 +759,12 @@ ${
     // 블록 -> 판 좌표 (카메라 x 오른쪽, y 앞 -> 판 X, Z(뒤 +))
     const ex: Extent[] = boxes.map((b) => ({
       id: b.id ?? null,
-      x0: b.x0 - reg.cx,
-      x1: b.x1 - reg.cx,
-      z0: -(b.y1 - reg.cy),
-      z1: -(b.y0 - reg.cy),
+      // 뚜껑 쪽: 판 X 는 카메라 x 와 반대다. 뚜껑이 안 보였으면 + 쪽
+      cap: b.cap === 1 || b.cap === -1 ? (b.y1 - b.y0 >= b.x1 - b.x0 ? b.cap : (-b.cap as 1 | -1)) : 1,
+      x0: -(b.x1 - reg.cx),
+      x1: -(b.x0 - reg.cx),
+      z0: b.y0 - reg.cy,
+      z1: b.y1 - reg.cy,
       bottom: PLATE_TOP + Math.max(0, b.bottom - base),
       top: PLATE_TOP + Math.max(0.005, b.top - base),
       thin: (b.kind ?? 'box') === 'box' && b.top - b.bottom < 0.06,
@@ -870,10 +891,10 @@ ${
           buildBottles(b, w, h, dd)
         }
       } else if (b.kind === 'bottle') {
-        const key = `${Math.round(w * 100)},${Math.round(h * 100)},${Math.round(dd * 100)}`
+        const key = `${Math.round(w * 100)},${Math.round(h * 100)},${Math.round(dd * 100)},${e.cap}`
         if (key !== b.key) {
           b.key = key
-          buildBottle(b, w, h, dd)
+          buildBottle(b, w, h, dd, e.cap)
         }
       }
       shown.push(c)
@@ -892,8 +913,8 @@ ${
     // 화면에 다 들어가야 할 범위 = 판(벨트 고리 포함) + 화물 + 다리. 카메라가 보는 점(판 위 ~ 화물 꼭대기 가운데)에서
     // 가장 먼 모서리까지의 거리를 반지름으로 (위아래 띠 · 양쪽 막대에 가려지지 않게)
     const top = cargoBox ? cargoBox.top : PLATE_TOP + 0.2
-    const hx = Math.max(L / 2 + MARGIN + 0.03, cargoBox ? Math.max(-cargoBox.x0, cargoBox.x1) : 0)
-    const hz = Math.max(W / 2 + MARGIN + 0.015, cargoBox ? Math.max(-cargoBox.z0, cargoBox.z1) : 0)
+    const hx = Math.max(Math.abs(plateX()) + PLATE_W / 2 + 0.015, cargoBox ? Math.max(-cargoBox.x0, cargoBox.x1) : 0)
+    const hz = Math.max(Math.abs(plateZ()) + PLATE_D / 2, cargoBox ? Math.max(-cargoBox.z0, cargoBox.z1) : 0)
     const cy = (PLATE_TOP + top) / 2 + 0.02
     const hy = Math.max(top + 0.02 - cy, cy)
     const R = THREE.MathUtils.clamp(Math.hypot(hx, hy, hz), 0.3, 0.9)
@@ -988,7 +1009,7 @@ ${
       let placed: { x0: number; x1: number; z0: number; z1: number; bottom: number } | null = null
       if (it.cam) {
         // 10-04 카메라 좌표 -> 판 좌표 (상자와 같은 맞춤)
-        placed = { x0: it.cam.x0 - reg.cx, x1: it.cam.x1 - reg.cx, z0: -(it.cam.y1 - reg.cy), z1: -(it.cam.y0 - reg.cy), bottom: PLATE_TOP }
+        placed = { x0: -(it.cam.x1 - reg.cx), x1: -(it.cam.x0 - reg.cx), z0: it.cam.y0 - reg.cy, z1: it.cam.y1 - reg.cy, bottom: PLATE_TOP }
         taken.push(placed)
       }
       // 1) 판 위 새 자리 (화물에 붙여서, 왼쪽부터). 두 방향 다 해 본다
@@ -1117,7 +1138,7 @@ ${
   /** 벨트 길 (팽팽할 때): 쌓인 층의 옆모습을 따라 감고 맨 위를 가로지른다. 느슨함 s(0..1) 만큼 부풀린다 */
   function strapPath(prof: Layer[], top: number, s: number, t: number, phase: number) {
     const base = PLATE_TOP
-    const xa = L / 2 + MARGIN + 0.01
+    const xa = HOOK_X
     const g = 0.0025
     const rc = 0.006
     const pts: [number, number, number][] = [] // x, y, kind(0 끝 · 턱, 1 옆, 2 위)
@@ -1268,8 +1289,8 @@ ${
         tail.push([p[0] + 0.009 + u * u * 0.012 * (1 + s.slack) + sw, p[1] - 0.016 - u * tl])
       }
       writeRibbon(s.tail, tail, z + 0.0012)
-      s.hooks[0].position.set(-(L / 2 + MARGIN + 0.01), PLATE_TOP + 0.002, z)
-      s.hooks[1].position.set(L / 2 + MARGIN + 0.01, PLATE_TOP + 0.002, z)
+      s.hooks[0].position.set(-HOOK_X, PLATE_TOP + 0.002, z)
+      s.hooks[1].position.set(HOOK_X, PLATE_TOP + 0.002, z)
     }
   }
 
@@ -1529,7 +1550,11 @@ ${
       buildFrame()
     }
     if (!state) return
-    if (state.reg) reg = { cx: state.reg.cx, cy: state.reg.cy }
+    if (state.reg && (state.reg.cx !== reg.cx || state.reg.cy !== reg.cy)) {
+      reg = { cx: state.reg.cx, cy: state.reg.cy }
+      placePlate()
+      shadowDirty = true
+    }
     // 블록: 잠깐(1.5 s) 비면 직전 모양을 유지
     const now = performance.now()
     if (state.boxes.length) {
@@ -1579,25 +1604,33 @@ ${
   let readySent = false
   const pulse = (t: number, hz: number) => 0.5 + 0.5 * Math.sin(t * Math.PI * 2 * hz)
 
-  /** 네 구역(NW NE SW SE) 단계 목표.
+  /** 네 구역(NW NE SW SE) 단계 목표. 구역마다 따로 칠한다.
    *  적재: 그 모서리가 평균(25 %)보다 무거우면 적재 단계 그대로, 가벼우면 한 단계 아래 (과적 때 짐이 몰린 쪽이 더 빨갛게)
-   *  벨트: 앞(NW NE) = 앞 벨트, 뒤(SW SE) = 뒤 벨트.  무게중심: 쏠린 쪽 두 구역.  화물 이동: 밀린 쪽 두 구역 */
+   *  무게중심: 무게중심이 있는 구역.  화물 이동: 밀린 쪽 구역.  둘 다 한 축이 거의 가운데면 그 축의 두 구역.
+   *  벨트는 판 색에 안 넣는다 (벨트 줄 · 이름표 · 아래 칸이 알린다): 넣으면 앞 · 뒤 두 구역씩 통째로 칠해져 네 구역이 안 보인다 */
   const QUAD_IDS = ['NW', 'NE', 'SW', 'SE'] as const
-  function quadGoal(on: boolean, lvLoad: Level, heavy: string | null, lvCog: Level, lvMove: Level): number[] {
+  const quadToward = (id: (typeof QUAD_IDS)[number], dx: number, dz: number, nearX: number, nearZ: number) =>
+    (Math.abs(dx) <= nearX || (dx > 0) === id.endsWith('E')) && (Math.abs(dz) <= nearZ || (dz > 0) === id.startsWith('S'))
+  function quadGoal(on: boolean, lvLoad: Level, lvCog: Level, lvMove: Level): number[] {
     if (!on || !st) return [0, 0, 0, 0]
     const loads = st.sensors.loads
     const parts = QUAD_IDS.map((k) => Math.max(0, loads[k] ?? 0))
     const tot = parts.reduce((a, b) => a + b, 0)
-    const c1 = levelOf('c1') ?? 0
-    const c2 = levelOf('c2') ?? 0
     const moveReason = view?.checks.find((c) => c.key === 'move')?.reason ?? ''
-    const moveDir = /앞쪽/.test(moveReason) ? 'N' : /뒤쪽/.test(moveReason) ? 'S' : /왼쪽/.test(moveReason) ? 'W' : /오른쪽/.test(moveReason) ? 'E' : null
+    let mx = hasCog && hasPred ? cogGoal.x - predGoal.x : 0
+    let mz = hasCog && hasPred ? cogGoal.y - predGoal.y : 0
+    if (/지금 정상/.test(moveReason)) mx = mz = 0      // 경보를 붙잡고 있을 뿐 지금은 허용 안: 남은 차이는 흔들림이라 어느 쪽도 칠하지 않는다
+    else if (Math.hypot(mx, mz) < 0.01) {              // 1 cm 밑은 방향을 모른다: 문구가 1 cm 넘는 값으로 붙잡혀 있을 때만 그 방향
+      const said = Number(/([d.]+)s*mm/.exec(moveReason)?.[1] ?? 0)
+      mz = said < 10 ? 0 : /앞쪽/.test(moveReason) ? -1 : /뒤쪽/.test(moveReason) ? 1 : 0
+      mx = said < 10 ? 0 : /왼쪽/.test(moveReason) ? -1 : /오른쪽/.test(moveReason) ? 1 : 0
+    }
+    const moveNear = 0.4 * Math.hypot(mx, mz)
     return QUAD_IDS.map((id, i) => {
       let lv = 0
       if (lvLoad) lv = tot > 200 && parts[i] / tot >= 0.25 ? lvLoad : Math.max(0, lvLoad - 1)
-      lv = Math.max(lv, id.startsWith('N') ? c1 : c2)
-      if (lvCog && heavy && id.includes(heavy)) lv = Math.max(lv, lvCog)
-      if (lvMove && moveDir && id.includes(moveDir)) lv = Math.max(lv, lvMove)
+      if (lvCog && hasCog && quadToward(id, cogGoal.x, cogGoal.y, QUAD_NEAR * L, QUAD_NEAR * W)) lv = Math.max(lv, lvCog)
+      if (lvMove && (mx !== 0 || mz !== 0) && quadToward(id, mx, mz, moveNear, moveNear)) lv = Math.max(lv, lvMove)
       return lv
     })
   }
@@ -1622,12 +1655,6 @@ ${
     const lvMove = levelOf('move')
 
     // 로드셀 고리: 몫만큼 호를 그린다 (넷이 고르면 각 1/4)
-    const heavySide = (() => {
-      if (!lvCog || !hasCog) return null
-      const dx = cogGoal.x
-      const dz = cogGoal.y
-      return Math.abs(dz) / W >= Math.abs(dx) / L ? (dz > 0 ? 'S' : 'N') : dx > 0 ? 'E' : 'W'
-    })()
     for (const f of feet) {
       f.share = approach(f.share, connected ? f.goal : 0.25, dt, 0.25)
       const segs = Math.max(1, Math.round(Math.min(1, f.share) * 64))
@@ -1635,7 +1662,7 @@ ${
       let c = COLORS.calm
       let op = 0.75
       if (lvLoad && lvLoad > 0) c = levelCol(lvLoad)
-      if (heavySide && f.id.includes(heavySide)) c = levelCol(lvCog)
+      if (lvCog && hasCog && quadToward(f.id, cogGoal.x, cogGoal.y, QUAD_NEAR * L, QUAD_NEAR * W)) c = levelCol(lvCog)
       if (c !== COLORS.calm) op = 0.65 + 0.35 * pulse(t, (lvLoad ?? 0) >= 2 ? 1.2 : 0.6)
       if (!connected) op = 0.25
       f.arcMat.color.copy(c)
@@ -1690,9 +1717,9 @@ ${
       heatU.uOn.value = approach(heatU.uOn.value, on ? 1 : 0, dt, 0.4)
       heatU.uTime.value = t
       heatU.uBase.value = approach(heatU.uBase.value, on ? (lvLoad ?? 0) : 0, dt, 0.3)
-      // 적재판 네 구역: 그 모서리의 무게 몫 · 그쪽 벨트 · 무게중심이 쏠린 쪽 · 화물이 밀린 쪽 중 가장 나쁜 단계
+      // 적재판 네 구역: 그 모서리의 무게 몫 · 무게중심이 있는 구역 · 화물이 밀린 구역 중 가장 나쁜 단계
       {
-        const goal = quadGoal(on, lvLoad, heavySide, levelOf('cog'), lvMove)
+        const goal = quadGoal(on, lvLoad, lvCog, lvMove)
         const q = heatU.uQuad.value
         q.set(approach(q.x, goal[0], dt, 0.35), approach(q.y, goal[1], dt, 0.35), approach(q.z, goal[2], dt, 0.35), approach(q.w, goal[3], dt, 0.35))
       }
@@ -1859,7 +1886,7 @@ ${
       }
       // IMU 자리 (판 뒤쪽). 값은 오른쪽 위 IMU 카드
       const deg = st.sensors.roll === null ? null : Math.hypot(st.sensors.roll, st.sensors.pitch ?? 0)
-      want.push({ id: 'imu', lv: null, anchor: local(0, PLATE_TOP + 0.004, imuZ()), side: 1, html: `<i class="ic">${ICON_SVG('gauge')}</i><b>IMU <em>${deg === null ? '—' : `기울기 ${deg.toFixed(1)}°`}</em></b>` })
+      want.push({ id: 'imu', lv: null, anchor: local(imuX(), PLATE_TOP + 0.004, imuZ()), side: 1, html: `<i class="ic">${ICON_SVG('gauge')}</i><b>IMU <em>${deg === null ? '—' : `기울기 ${deg.toFixed(1)}°`}</em></b>` })
     }
     // 분해 모드: 층마다 높이
     if (mode === 'explode' && explodeT > 0.5) {

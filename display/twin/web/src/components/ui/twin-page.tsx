@@ -48,7 +48,7 @@ const VIEW_MODES: { id: ViewMode; label: string; icon: ReactNode }[] = [
  * 디지털 트윈 화면 (800x480 기준).
  *  위: 판정 띠 (정상 · 주의 · 위험 + 가장 중요한 이유)
  *  가운데: 3D 적재 판 · 화물 · 벨트 · 무게중심 (문제 있는 곳에 이름표)
- *  아래: 다섯 칸 (적재 · 무게중심 · 화물 이동 · 앞 벨트 · 뒤 벨트, 적재 모드는 화물 이동을 뺀 네 칸). 벨트 칸에는 K x y. 누르면 그곳을 가까이 보고 자세한 이유
+ *  아래: 다섯 칸 (적재 · 무게중심 · 화물 이동 · 앞 벨트 · 뒤 벨트, 적재 모드의 화물 이동은 경보 없이 값만). 벨트 칸에는 K x y. 누르면 그곳을 가까이 보고 자세한 이유
  *  모서리: 홈 · 시점 · 일시정지 · 처음부터 · 볼륨
  * onExited: 모의 모드에서 '끝내기' 를 누르면 (닫을 브라우저가 없으므로) 부른다.
  */
@@ -117,8 +117,8 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
       })
       .catch(() => say('모드를 바꾸지 못했습니다'))
   }, [api, say])
-  const hideMove = driveMode === 'load'
-  const view = useMemo(() => buildView(sceneState, connected, hideMove), [sceneState, connected, hideMove])
+  const loadMode = driveMode === 'load'
+  const view = useMemo(() => buildView(sceneState, connected, loadMode), [sceneState, connected, loadMode])
 
   // ── 기준 재설정: 화물을 올리거나 내린 뒤 남은 화물 이동 경보를 지우고 지금 상태를 정상 기준으로 (센서 파이 판정).
   //    과적 · 무게중심 · 장력 판정은 그대로라, 지금 위반이면 계속 뜬다 ──
@@ -159,9 +159,6 @@ export default function TwinPage({ onExited }: { onExited?: () => void }) {
     })
   }, [say])
   const onPick = useCallback((k: CheckKey) => setFocus((f) => (f === k ? null : k)), [])
-  useEffect(() => {
-    if (hideMove) setFocus((f) => (f === 'move' ? null : f))
-  }, [hideMove])
   useEffect(() => {
     if (!focus) return
     const id = window.setTimeout(() => setFocus(null), FOCUS_MS)

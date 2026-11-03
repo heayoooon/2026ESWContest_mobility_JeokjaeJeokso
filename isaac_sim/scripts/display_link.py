@@ -91,8 +91,8 @@ def sensors_from_row(row):
 
 def move_cargo(blob, offset_mm=None, on_plate=True):
     """Shift the cargo cells of a frame's heightmap by the plate displacement (mm, plate X / Y = cog_x / cog_y
-    directions), or clear them when the cargo has left the plate. Display registration: plate X = camera x,
-    plate Z (rear +) = -camera y, so +cog_y (towards the rear belt) is -grid y."""
+    directions), or clear them when the cargo has left the plate.
+    The camera sits at the front (N) end looking back: +cog_y (towards the rear belt) is +grid y, +cog_x is -grid x."""
     hl = struct.unpack_from('!I', blob, 0)[0]
     header = json.loads(blob[4:4 + hl])
     g = header['grid']
@@ -103,15 +103,19 @@ def move_cargo(blob, offset_mm=None, on_plate=True):
     valid = h != g['nodata']
     if not valid.any():
         return blob
-    floor = int(np.percentile(h[valid], 10))
+    on_board = g['y0'] + (np.arange(g['ny']) + .5) * g['cell'] <= .63    # the ROI now reaches past the plate's far end (y .63): floor-standing things there are not cargo
+    if not valid[on_board].any():
+        return blob
+    floor = int(np.percentile(h[on_board][valid[on_board]], 10))
     cargo = valid & (h > floor + 30)                      # cells more than 3 cm above the plate
+    cargo[~on_board] = False
     plate_h = np.where(valid, floor, g['nodata']).astype(np.int16)
     plate_c = col.copy()
     if cargo.any():
         plate_c[cargo] = np.median(col[valid & ~cargo], axis=0) if (valid & ~cargo).any() else 90
     if on_plate and offset_mm is not None:
         cell_mm = g['cell'] * 1000.
-        dx, dy = int(round(offset_mm[0] / cell_mm)), int(round(-offset_mm[1] / cell_mm))
+        dx, dy = int(round(-offset_mm[0] / cell_mm)), int(round(offset_mm[1] / cell_mm))
         ys, xs = np.nonzero(cargo)
         ys2, xs2 = ys + dy, xs + dx
         keep = (ys2 >= 0) & (ys2 < g['ny']) & (xs2 >= 0) & (xs2 < g['nx'])

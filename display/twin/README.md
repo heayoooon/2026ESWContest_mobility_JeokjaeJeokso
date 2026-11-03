@@ -17,7 +17,7 @@ display/twin/
 │   ├─ stack_layers.py  쌓인 상자를 층별로 나누기 · 옆 짐 · 판 높이 찾기
 │   ├─ twin_view.py, stable_twin.py, cargo_model.py, surface_core.py, transport_core.py
 │   │                   수신 · 깊이 안정화 · 2.5D 상자 맞추기
-│   ├─ hud_v2.py, hud_v3.py (경보음 · 음성), scene_v2.py, scene_v3.py
+│   ├─ hud_v2.py, hud_v3.py (경보음 · 음성만 쓴다. 안의 pygame HUD 평면도는 안 쓰는 옛 코드로 센서 파이 이름 그대로 그린다), scene_v2.py, scene_v3.py
 │   └─ sounds/          caution.mp3 '주의 주의' · warning.mp3 '경고 경고' · danger.mp3 '위험 위험',
 │                       reason/*.mp3 이유 음성 (ElevenLabs, Julia - Confident and Friendly, Eleven v4)
 ├─ www/               빌드된 화면 (서버가 그대로 내보낸다. 파이에는 node 가 필요 없다)
@@ -61,7 +61,7 @@ cd display/twin
 | `sensor_age` | 센서 값이 카메라 프레임보다 얼마나 오래됐나 (s) |
 
 `sensors` (없는 값은 `null`):
-- 로드셀: `NW_g NE_g SW_g SE_g total_g`, 장력: `c1_N c2_N` (c1 = 앞(N) 벨트, c2 = 뒤(S) 벨트)
+- 로드셀: `NW_g NE_g SW_g SE_g total_g`, 장력: `c1_N c2_N` (c1 = 앞(N) 벨트 = 카메라 쪽, c2 = 뒤(S) 벨트 = 먼 쪽)
 - IMU: `imu1_ax_G imu1_ay_G imu1_az_G imu1_gz_dps imu1_roll_deg imu1_pitch_deg`
 - 판정 (`pi/analysis`, 0 정상 · 1 주의 · 2 경고 · 3 위험): `risk lv_load lv_cog lv_move lv_c1 lv_c2 risk_text`,
   `load_kg measured_kg cog_x_mm cog_y_mm cog_pred_x_mm cog_pred_y_mm c1_min_N c2_min_N`
@@ -94,7 +94,10 @@ cd display/twin
   - 이어서 이유 (`twin_server.reason_clip`): 과적입니다 · 화물이 앞쪽/뒤쪽/왼쪽/오른쪽으로 쏠렸습니다 · 화물이 이동했습니다 ·
     앞/뒷 벨트에 장력이 부족합니다 (부족 · 풀림) · 앞/뒷 벨트에 장력이 과조임 되었습니다 (과조임 · 상한 넘음)
   - 여러 개가 같이 뜨면 높은 단계부터 차례로, 더 높은 단계가 뜨면 재생 중인 낮은 단계를 끊는다. 이미 풀린 알림은 말하지 않는다
-  - 적재 모드에서는 소리만 안 내고 화면은 주행 모드와 같다. 주행으로 바꾸는 순간 이미 떠 있는 경고 · 주의가 울린다
+  - 적재 모드에서는 소리를 안 낸다. 화면도 주행 모드와 같지만 화물 이동 칸만 등급 없이 값만 보인다 (기준 무게중심에서 떨어진 거리. 올리고 내리는 중이라 잠깐 커졌다가 약 4 초 뒤 새 자리를 기준으로 0 쪽으로 돌아온다, 화물이 없으면 0 mm '화물 없음'). 주행으로 바꾸는 순간 이미 떠 있는 경고 · 주의가 울린다
+  - 카메라 격자는 y .75 m 까지 본다 (판 끝 실측 y .63, x -.245 ~ +.215). 그 너머 판 뒤 바닥에 선 물건은 화물로 안 친다
+- 앞뒤 기준: **카메라 가까운 쪽이 트럭 앞** (앞 벨트), 먼 쪽이 뒤 (뒤 벨트). 센서 파이 이름과 같다. 카메라를 보고 선 셈이라 화물을 그릴 때 판 X = -(카메라 x - cx), 판 Z(뒤 +) = 카메라 y - cy
+- 적재판은 네 구역을 따로 칠한다: 모서리 무게 몫 (과적일 때) · 무게중심이 있는 구역 · 화물이 밀린 구역 중 가장 나쁜 단계. 벨트는 벨트 줄 · 이름표 · 아래 칸이 알린다
 - 보기 전용 주소 `http://<디스플레이 IP>:8091`: 같은 화면을 다른 사람이 본다 (멈춤 · 음량 · 끝내기 · 모드는 막힘, 화면을 한 번 누르면 같은 음성이 그 브라우저에서도 난다)
 
 ## 녹화 재생
@@ -108,8 +111,8 @@ cd display/twin
 서버가 받는 연결은 하나라서 센서 파이 실시간 송신이 붙어 있으면 재생이 들어가지 않는다. 같이 쓰려면 재생 전용 서버를 따로 띄운다:
 `python3 server/twin_server.py --http 8092 --view 8093 --tcp 5012` + `python3 server/replay_runs.py --port 5012`
 
-카메라와 적재판의 위치 관계는 잰 적이 없어서, 서버가 "가감속 없을 때 카메라로 본 화물 중심 = 로드셀 무게중심" 이 되게
-스스로 맞춘다 (`logs/../run/reg.json` 에 저장). 카메라를 옮기면 `run/reg.json` 을 지운다.
+카메라와 적재판의 위치 관계는 `run/reg.json` 에 고정돼 있다 (지금 값 = 합판 실측 가운데 cx -.015, cy .35). 카메라를 옮기면 이 파일을 지운다:
+서버가 "가감속 없을 때 카메라로 본 화물 중심 = 로드셀 무게중심" 이 되게 다시 배워 저장한다.
 
 ## 화면 고치기 (PC)
 

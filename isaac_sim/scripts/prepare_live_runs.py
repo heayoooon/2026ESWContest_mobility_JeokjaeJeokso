@@ -192,7 +192,7 @@ def main():
         ' whether a run starts/ends at rest is taken from its Korean title keywords.',
         'Recorded imu1 roll/pitch are accelerometer tilt estimates (they track ax/ay); the twin derives body'
         ' tilt from acceleration instead and shows the recorded angles as data.',
-        'Camera grid (x -0.27..0.27, y 0.05..0.50 m, 1 cm) maps to bed X (opposite sign) and bed Y;'
+        'Camera grid (x -0.27..0.27, y 0.05..0.50 m, 0.75 m since 2026-11-03, see each case grid, 1 cm) maps to bed X (opposite sign) and bed Y;'
         ' the camera is at the N (front) end looking toward S. Heights are mm above the room floor; the plate'
         ' top is 208 mm above the floor (live_twin.py --plate-above-floor).',
         'Bed: load cells NW/NE/SW/SE 250 x 392 mm, N = front (belt c1), S = rear (belt c2). RATED_KG 15.',

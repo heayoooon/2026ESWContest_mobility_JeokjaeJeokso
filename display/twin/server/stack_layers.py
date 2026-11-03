@@ -82,18 +82,36 @@ COLD_DW = 1000.0                               # 켠 뒤 무게가 이만큼 변
 COLD_G = 1500.0                                # 켠 순간 이미 이만큼 올라와 있을 때만 켠 직후로 친다 (빈 판에서 시작하면 무게 계단이 정한다)
 COLD_S, COLD_MAX, COLD_SHORT, COLD_LONG = 5.0, 15.0, .08, .14  # 켠 뒤 COLD_MAX 초 안에 상자를 처음 잡고 COLD_S 초 동안은 받침 위 병 자국만으로도 물통을 만든다 (무게 기록이 없다). 벨트(폭 5 cm)는 안 걸린다
 BOTTLE_NARROW = .13                            # 평평해도 짧은 쪽이 이 안이면 물병 표면일 수 있다: 무게가 안 늘고 물통이 없을 때만 상자
+# 켠 직후 병이 얹혀 상자 윗면이 대부분 가려진 경우 (2026-11-03 끝쪽 상자 + 눕힌 2 L: 윗면 .35 는 병 앞 3 cm 띠만 보이고 병 면 .43 이 가장 넓다).
+# 가장 넓은 면이 병 크기로 좁고, 카메라 쪽 STEP_ROWS 칸 안에 그 폭의 STEP_PART 넘게 더 낮은 평평한 턱이 있고 (차이 STEP_RISE m), 병 증거가 있으면
+# (면 안에 병을 뚫고 본 낮은 칸 · 빈 칸이 STEP_SEE 넘게, 또는 파란 뚜껑) 턱이 상자 윗면이다. STEP_HITS 프레임 이어져야 믿는다. 병은 _cold_bottle 이 자국으로 만든다
+STEP_ROWS, STEP_PART, STEP_RISE, STEP_SEE, STEP_HITS = 4, .4, (.04, .16), .04, 5
 BOX_MIN_SIDE = .12                             # 평평함을 못 잰 후보를 상자로 칠 최소 짧은 쪽 (m). 물병 지름 11 cm 보다 넓어야 한다
 ARM_W, ARM_H = .12, .30                       # 이보다 좁고 높으면 팔로 보고 물건으로 만들지 않는다
 PARTIAL_AREA, PARTIAL_H = 1.5, .06            # 아래 물건을 '일부만 본 것' 으로 볼 넓이 비 · 두께
 PLATE_X = .20              # 중심이 이보다 멀면 판 밖 (m)
+PLATE_Y = .66              # 판 먼 쪽 끝 (실측 .63 + 여유). 중심이 이보다 멀면 판 밖: ROI 를 y .75 까지 넓혀서 판 뒤 바닥에 선 물건도 보인다 (2026-11-03)
+PLATE_X0, PLATE_X1, PLATE_Y1 = -.245, .215, .63   # 실측 판의 왼쪽 · 오른쪽 · 먼 쪽 끝 (카메라 좌표 m). 왼쪽이 PLATE_X 보다 멀어서 왼쪽 끝 상자가 잘려 좁게 보였다
+PLATE_Z_MAX, PLATE_CELLS = .30, 150            # 후보 없이 높이맵으로 받침면을 찾을 때: 이보다 높으면 판이 아니다 · 판으로 볼 최소 칸 수
 # 물통: 놓을 때 늘어난 무게가 이 안이면 물통 (g). 아래 끝은 무게 잡음 거르기. 눕힌 2 L 고정 크기 (지름, 길이 m), 방향은 세로(앞뒤) · 가로(좌우) 둘 다
 BOTTLE_G = (1200.0, 2300.0)  # 위 끝: 가득 찬 2 L 는 병까지 2 kg 을 조금 넘는다. 아래 끝: 실제 2 L 는 +1.93 ~ +2.1 kg, 벨트 작업 · 주행 흔들림은 +0.35 ~ +1.09 kg (녹화 8 개)
 BOTTLE_2L = (.11, .31)
+# 무게중심으로 병 따라가기. 위 상자에 놓인 병은 카메라에서 10 cm 안이라 깊이가 안 잡히고 (구멍만), 먼 쪽은 시야 밖이다. 대신 로드셀은 늘 잰다:
+# 병 자리 = (지금 무게 x 지금 무게중심 - 놓기 전 무게 x 놓기 전 무게중심) / 병 무게. 2026-11-04 녹화: 이 자리와 파란 뚜껑 거리가 15 ~ 16 cm (병 길이의 절반).
+# 합판 가운데 = 로드셀 사각형 가운데 (카메라 좌표 m). 무게가 FOLLOW_G g 안으로 맞고 흔들림 · 가감속 없을 때만 믿고, FOLLOW_MOVE m 넘게 FOLLOW_N 프레임 벗어나면 옮긴다
+CELL_CX, CELL_CY, BED_L, BED_W = -.015, .35, 250.0, 392.0
+FOLLOW_G, FOLLOW_MOVE, FOLLOW_N, FOLLOW_ACC, FOLLOW_GYRO, FOLLOW_BELT = 200.0, .03, 5, .03, 3.0, 1.5   # 장력이 FOLLOW_BELT N 넘게 변하면 무게중심이 움직인 것은 벨트 때문이다: 기준을 다시 잡는다
+# 뚜껑으로 방향: 병 가운데에서 뚜껑까지 이 거리 (m) 일 때 큰 축이 병 방향, 같은 답이 CAP_VOTES 번. 가로인데 보여야 할 뚜껑이 CAP_MISS_N 프레임 안 보이면 뚜껑이 먼 쪽으로 간 세로다
+CAP_DIST, CAP_VOTES, CAP_MISS_N, FOV_K, FOV_Z = (.10, .21), 3, 15, 2.19, .786
+AXIS_EMPTY_N = 80          # 지금 방향의 병 자리에 놓기 전 사진과 같은 칸이 이만큼 보이면 병은 거기 없다: 다른 방향으로 누워 있다
+BOTTLE_OFF_S = 2.0         # 총무게가 놓기 전으로 돌아온 채 자국도 없으면 이만큼(초) 뒤 없앤다 (빼는 계단을 놓쳐도)
 # 물통을 뺀 것: 후보가 BOTTLE_GONE 초 안 보이고, 최근 BOTTLE_EVENT_S 초 안에 무게가 내려간 '계단' 이 있다. 계단 = 안정된 총무게(1.5 초 흔들림 STEP_STD g 안)가
 # 다른 안정된 값으로 내려갔는데 장력은 그대로. 벨트를 조이고 풀면 장력이 같이 변하고 (실제연습1: 뒤 벨트 풀 때 -4.3 kg), 손으로 누르면 안정되지 않아 걸러진다.
 # load_kg 는 벨트를 조일 때 1 kg 넘게 출렁이고 늦어서 여기에 안 쓴다. 계단 크기는 물통 무게의 BOTTLE_DROP_PART 넘게, BOTTLE_DROP g 안
 BOTTLE_GONE, BOTTLE_DROP, BOTTLE_DROP_PART, BOTTLE_EVENT_S, BOTTLE_WEIGHT = .8, (150.0, 2600.0), .8, 8.0, 2000.0   # 반쯤 들었다 놓는 것은 뺀 게 아니다
+BOTTLE_LIFT_S = 30.0       # 물통을 들고 손이 옛 자리를 덮고 있어도 된다: 무게 계단 뒤 이 시간 안에 자국이 사라지면 뺀 것 (2026-11-03: 든 채 약 7 초)
 STEP_STD, STEP_S, STEP_MIN = 40.0, .6, 100.0
+BOTTLE_SAME, BOTTLE_SAME_OVER = .2, .15   # 방금 뺀 무게와 이 비율 안으로 같은 무게를 다시 놓고, 옛 물통과 이 비율 넘게 겹치면 옮겨 놓은 같은 병이다 (유령이 남으려면 병 넓이의 약 18 % 는 겹쳐야 한다)
 LATE_S = 8.0               # 놓고 이만큼 뒤에 맞춰져도 무게 변화를 찾는다
 BELT_CHANGE = 3.0          # 장력이 이만큼(N) 변했으면 총무게 변화에 벨트가 섞인 것 -> 그 변화는 물건 무게로 안 친다
 BOTTLE_NEAR, BOTTLE_MOVE, BOTTLE_PLUS_G = .18, .08, 300.0   # 물통 조각으로 볼 거리 · 후보 중심이 이만큼 벗어나면 옮김 · 무게가 이만큼 늘면 조각 아닌 새 물건
@@ -106,6 +124,14 @@ CYL_SHORT, CYL_LONG, CYL_CURVE = (.05, .14), (.14, .36), 3.0   # 원통: 짧은 
 MARK_STRONG, MARK_PART = 150, .5              # 무게 계단으로 물통을 만들 때 자국 칸 수: 이만큼, 받침이 작으면 그 위에 올라가는 병 넓이의 이 비율
 BOTTLE_WAIT, BOTTLE_CHAIN = 3.0, 1.5          # 무게가 늘고 모양이 보일 때까지 기다리는 시간 (초) · 손을 떼는 동안 나뉜 계단을 이어 볼 시간
 HAND_H, HAND_N = .16, 15                      # 맨 위 상자보다 이만큼(m) 높은 칸이 이만큼 있으면 손 · 팔이 들어와 있다 (눕힌 물병은 11 cm)
+HAND_STILL_N, HAND_STILL_Z = 50, .03           # 판보다 높은 채 높이가 이만큼(m) 안으로 이만큼(프레임) 그대로인 칸은 손이 아니다 (판 위로 지나는 케이블: 2026-11-03 늘 34 ~ 49 칸이라 물병 방향을 다시 못 봤다)
+# 무게 계단 직전 사진: 무게가 안정된 동안 BEFORE_EVERY 초마다 높이맵을 모아 (BEFORE_MOVE m 넘게 변한 칸이 BEFORE_QUIET 칸 안일 때만, 손이 없을 때만)
+# 계단이 오면 최신 BEFORE_DROP 장 (벌써 찍힌 손 · 병) 을 뺀 칸별 중앙값으로 얼린다. 이것보다 BEFORE_UP m 넘게 높아진 칸만 병 표면으로 친다 (판 위 전자부품 · 전선은 그대로라 안 친다)
+BEFORE_EVERY, BEFORE_N, BEFORE_MIN, BEFORE_DROP, BEFORE_MOVE, BEFORE_QUIET, BEFORE_UP = .5, 16, 3, 4, .03, 40, .02
+BEFORE_FAST = .2                              # 표본이 BEFORE_MIN 장 모일 때까지는 이 간격으로 모은다 (상자를 빼고 금방 물병을 놓아도 새 사진이 있게)
+BEFORE_DOWN = .03                             # 놓기 전보다 이만큼(m) 낮아진 칸도 병 자국이다: 병을 통과한 깊이는 굴절로 받침보다 낮게 찍힌다 (2026-11-01 초기: 윗면 .57 인데 .48 ~ .54)
+CAP_ROSE = .3                                 # 뚜껑으로 볼 파란 덩어리는 이 비율 넘게 새로 생긴 칸이어야 한다 (전자부품의 파란 칸을 빼려고)
+NARROW_H = .16                                # 받침보다 이만큼(m) 넘게 높은 평평한 면은 좁아도 물병 표면이 아니다 (눕힌 2 L 는 11 cm. 높은 상자는 먼 쪽이 시야 밖이라 좁게 보인다)
 # 상자 자리에 값 있는 칸이 이 비율 밑이면 깊이로 모른다 (햇빛에 빈 판은 값이 빠진다) -> DROP_RECENT 초 안의 무게 계단이 그 상자 무게의 DROP_PART 넘으면 뺀 것. 무게를 모르는 상자는 DROP_MIN g
 NODATA_FRAC, DROP_RECENT, DROP_PART, DROP_MIN, BOX_DROP_S = .25, 2.0, .5, 350.0, 3.0
 # 잰 물통 무게 합이 안정된 총무게보다 BOTTLE_EXCESS g 넘게 크면 그만큼 물통이 없다 (2026-11-02 06:16: 총 127 g 에 1.9 kg 물통이 남음). 상자 무게 비교 허용 비율
@@ -122,10 +148,13 @@ VACATED = .4
 MOVE_UP, CAP_STAY = 120, .06
 # 파란 뚜껑: 최소 칸 수, 물병 끝에서 찾는 범위 (밖 m, 안 m), 옆으로 벗어날 수 있는 거리, 받침 위 높이 범위, 뚜껑 반지름, 뚜껑에 맞출 때 움직이는 최소 거리
 CAP_N, CAP_OUT, CAP_IN, CAP_SIDE, CAP_Z, CAP_R, CAP_MOVE = 6, .14, .03, .08, (.02, .20), .015, .025   # 높이 조건: 상자 흰 라벨도 파랗게 읽히지만 윗면과 높이가 같다 (실제 뚜껑은 5 cm 위)
+CAP_BLUE = 2.0             # 뚜껑 덩어리의 파랑 / 빨강 중앙값이 이 위여야 한다 (2026-11-03 실측: 진짜 뚜껑 2.8 ~ 11, 병에 비친 파랑 · 전자부품 1.4 ~ 1.8)
 # 켠 직후 무게 기록 없이 모양으로만 만든 물통: 줄어들 무게를 모르니 모양이 LIGHT_GONE 초 안 보이면 없앤다
 LIGHT_GONE = 1.5
 # 한 상자를 나눠 본 것: MERGE_S 초 안에 무게가 MERGE_G 안으로 같고 (새 무게 없음) 붙어 있고 윗면 높이가 MERGE_TOP 안이면 합친다 (뚜껑 눌림 3 cm). 더 차이 나면 진짜 다른 상자다 (빈 상자는 무게가 없다)
 MERGE_S, MERGE_G, MERGE_GAP, MERGE_TOP, MERGE_X = 4.0, 400.0, .04, .03, .6
+BOX_BACK_S = 20.0          # 없어진 상자와 같은 자리 · 같은 높이로 이 시간 안에 다시 잡히면 놓는 중인 새 상자가 아니라 돌아온 그 상자다 (손으로 눌러 잠깐 가렸다)
+STACK_SAME = .2            # 같은 자리 같은 무게로 잡힌 두 면을 한 상자로 볼 높이 차이 (m)
 # 병 자국: 받침 윗면보다 높은 칸 (병 표면) + 값이 없어진 칸 (투명한 몸통 · 병 뒤 그림자). 높은 칸이 BAND_N 칸 넘으면 그것으로 방향을 본다 (그림자가 안 섞인다)
 BAND_LOW, BAND_TOP, BAND_N, BAND_LONG, BAND_SHORT, BAND_RATIO, MARK_N, MARK_FLOOR_UP, MARK_RATIO, FIT_EVERY = .02, .16, 30, .15, .05, 1.25, 60, 30, 1.2, .5
 # 페트병: 눕힌 병 = 길쭉한 바닥 (긴 쪽 / 짧은 쪽 >= BOTTLE_ASPECT) + 높이가 짧은 쪽과 비슷, 세운 병 = 좁고 높다
@@ -163,6 +192,25 @@ def _cells(frame, o, shrink=.01):
     j0, j1 = int((o['y0'] + shrink - g['y0']) / c), int(np.ceil((o['y1'] - shrink - g['y0']) / c))
     v = h[max(0, j0):max(0, j1), max(0, i0):max(0, i1)]
     return v[np.isfinite(v)]
+
+
+def plate_floor(frame):
+    """상자 후보가 아직 없을 때의 받침면: 판 사각형 안 높이맵에서 넓은 가장 낮은 면. 못 찾으면 None."""
+    h, g = frame.get('h'), frame['hdr'].get('grid')
+    if h is None or not g:
+        return None
+    c = g['cell']
+    xs = g['x0'] + (np.arange(h.shape[1]) + .5) * c
+    ys = g['y0'] + (np.arange(h.shape[0]) + .5) * c
+    v = np.asarray(h)[ys <= PLATE_Y - .04][:, np.abs(xs) <= PLATE_X]
+    v = v[np.isfinite(v) & (v < PLATE_Z_MAX)]
+    if len(v) < PLATE_CELLS:
+        return None
+    hist, e = np.histogram(v, np.arange(np.floor(v.min() * 100) / 100, PLATE_Z_MAX + BIN, BIN))
+    good = np.nonzero(hist >= PLATE_CELLS)[0]
+    if not len(good):
+        return None
+    return float(np.median(v[np.abs(v - (e[good[0]] + BIN / 2)) < .012]))
 
 
 def merge_strips(boxes, frame):
@@ -237,7 +285,8 @@ class ObjectMemory:
       - 새 물건: HOLD 초 이어지고 무게가 안 흔들리며 (손이 닿아 있으면 기다린다) 무게가 실제로 늘었을 때만. 장력이 변한 무게는 안 친다 (벨트).
         비교할 무게가 없으면 (막 켠 뒤) 그대로 만든다. 같은 자리에서 있던 윗면보다 RISE 넘게 높으면 그 위에 올린 것
       - 상자: 높이맵에서 기억에 없는 평평한 네모를 직접 찾아 FLAT_HOLD 초 뒤 만든다 (무게가 없어도)
-      - 물통: 손을 뗀 상태로 무게가 BOTTLE_G 안으로 늘고, 네모가 아니고, 받침 위에 자국이 있을 때만 (눕힌 2 L 고정 크기). 방향 · 자리는 자국으로 정하고 손을 뗄 때마다 다시 본다
+      - 물통: 손을 뗀 상태로 무게가 BOTTLE_G 안으로 늘고, 네모가 아니고, 받침 위에 자국이 있을 때만 (눕힌 2 L 고정 크기). 방향 · 자리는 자국으로 정하고 손을 뗄 때마다 다시 본다.
+        자국은 무게 계단 직전 사진 (before) 과 달라진 칸만 센다: 판 위 전자부품 · 전선은 그대로라 안 세어지고, 카메라에 안 보이는 무게로는 물통이 안 생긴다
         투명해서 깊이가 뚫리므로, 후보가 BOTTLE_GONE 초 안 보이고 무게도 줄었을 때만 없앤다
       - 번호는 물건마다 고정 -> 화면도 번호로 3D 상자를 붙잡아 다른 물건이 안 움직인다"""
 
@@ -249,11 +298,11 @@ class ObjectMemory:
     def _save(self, t):
         if not self.save_path or not self.saving or self.want_restore:
             return
-        sig = (round((self.w or 0) / 100), tuple((o['id'], o['kind'], *(round(o[k], 2) for k in GEOM)) for o in self.objs))
+        sig = (round((self.w or 0) / 100), tuple((o['id'], o['kind'], o.get('cap'), *(round(o[k], 2) for k in GEOM)) for o in self.objs))
         if sig == self.saved_sig or t - self.saved_t < SAVE_EVERY:
             return
         self.saved_sig, self.saved_t = sig, t
-        keys = GEOM + ('bottom', 'level', 'weight', 'dw', 'axis', 'band', 'light', 'from_event', 'sup')    # w0 은 놓는 순간에만 쓴다
+        keys = GEOM + ('bottom', 'level', 'weight', 'dw', 'axis', 'band', 'light', 'from_event', 'sup', 'cap')    # w0 은 놓는 순간에만 쓴다
         objs = []
         for o in self.objs:
             q = {k: o[k] for k in keys if o.get(k) is not None}
@@ -266,6 +315,13 @@ class ObjectMemory:
             with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(dict(w=self.w, next_id=self.next_id, objs=objs), f, ensure_ascii=False)
             os.replace(tmp, self.save_path)
+            before = {str(o['id']): o['before'] for o in self.objs if o.get('before') is not None}
+            key = tuple((k, id(v)) for k, v in before.items())
+            if key != self.saved_before:               # 사진은 물통을 만들 때만 바뀐다 (주행 중 무게가 흔들려도 다시 안 쓴다)
+                with open(tmp, 'wb') as f:
+                    np.savez(f, **before)
+                os.replace(tmp, self.save_path + '.before')
+                self.saved_before = key
         except OSError as e:
             self._note('물건 기억 저장 실패: %s', e)
 
@@ -282,19 +338,25 @@ class ObjectMemory:
         if d.get('w') is None or abs(d['w'] - self.w) > RESTORE_G:
             self._note('저장한 물건 %d 개 안 씀 (총무게 %.0f -> %.0f g)', len(d.get('objs', ())), d.get('w') or 0, self.w)
             return
+        try:
+            with np.load(self.save_path + '.before') as f:
+                before = {k: f[k] for k in f.files}
+        except Exception:                              # 없거나 깨졌으면 사진 없이 되살린다
+            before = {}
         for q in d.get('objs', ()):
             o = dict(q, color=np.asarray(q['color'], float), held=False, seen=t, born=t - 100.0, low_since=None, cand=dict(q),
                      hist=collections.deque(maxlen=GEOM_N), load_ref=self.w, centers=collections.deque(maxlen=GEOM_N))
             o.setdefault('weight', BOTTLE_WEIGHT)
             if o['kind'] == 'bottle':
                 o.setdefault('from_geom', {k: o[k] for k in GEOM})
+                o['before'] = before.get(str(o['id']))
             self.objs.append(o)
         self.next_id = max(d.get('next_id', 1), self.next_id)
         self._note('저장한 물건 %d 개 되살림 (총무게 %.0f g)', len(self.objs), self.w)
 
     def reset(self):
         self.want_restore = bool(self.save_path)
-        self.saved_sig, self.saved_t = None, -1e9
+        self.saved_sig, self.saved_t, self.saved_before = None, -1e9, None
         self.objs = []
         self.pending = []
         self.next_id = 1
@@ -304,14 +366,24 @@ class ObjectMemory:
         self.level = None                             # 마지막 안정된 (총무게, 앞 장력, 뒤 장력)
         self.drop_event = None                        # 마지막 내려간 계단 (시각, g)
         self.box_gone_t, self.box_gone_dw = -1e9, None   # 마지막으로 없어진 상자의 시각 · 놓을 때 무게 (그 무게 계단을 물통으로 치지 않으려고)
+        self.box_gone_geom = None                     # 마지막으로 없어진 상자 자리
         self.up_event = None                          # 아직 처리 안 한 올라간 계단 (시각, g)
         self.up_t = -1e9                              # 마지막으로 올라간 시각
         self.h_buf = collections.deque(maxlen=5)      # 최근 높이맵 (중앙값으로 잡음을 줄인다)
         self.hm, self.grid, self.floor = None, None, None   # 이번 프레임 높이맵 · 받침면
         self.col = None                               # 이번 프레임 색 (뚜껑 찾기)
         self.bg = None                                # 물통이 없을 때의 높이맵 (원래 값이 없던 칸을 병 자국으로 안 치려고)
+        self.bg0 = None                               # 켠 뒤 처음 안정된 높이맵 (표본이 모이기 전에 무게가 오르면 놓기 전 사진으로 쓴다)
+        self.ring = collections.deque(maxlen=BEFORE_N)   # 무게가 안정된 동안 모은 높이맵 표본
+        self.ring_t, self.ring_prev = -1e9, None
+        self.before = None                            # 마지막 무게 계단 직전 사진 (표본 중앙값)
+        self.before_stale = False                     # 사진을 찍은 뒤 상자가 없어졌다
+        self.high_n, self.high_z = None, None         # 칸마다 판보다 높은 채 높이가 그대로인 프레임 수 · 그 높이
         self.cold_w = None
         self.t_start, self.t_box, self.cold_done = None, None, False   # 켠 시각 · 상자를 처음 잡은 시각 (켠 직후에는 무게 기록이 없다)
+        self.step_hits = 0                            # 병이 얹힌 상자 모양이 이어진 프레임 수
+        self.cogs = collections.deque(maxlen=12)      # 최근 (시각, 무게중심 x, y) 가감속이 없을 때만
+        self.rest = None                              # 무게가 안정된 마지막 (총무게, 무게중심 x, y): 놓기 전 값
         self.up_chain = None                          # (시각, 시작 무게) 손을 떼는 동안 나뉜 계단을 이어 본다
         self.hand_cells = 0                           # 이번 프레임에 기억보다 훨씬 높은 칸 수 (손 · 팔)
         self.flat_now = []                            # 이번 프레임에 찾은 기억에 없는 네모 · 원통
@@ -424,7 +496,7 @@ class ObjectMemory:
             v_lvl, v_low, v_all = int(lvl[old & ~new].sum()), int(low[old & ~new].sum()), int((old & ~new).sum())
             seen_there = n_lvl >= 3 and n_lvl >= .5 * n_all
             left_empty = v_all > 0 and v_low >= TRACK_VACATED * v_all
-            ok = v_lvl <= .25 * max(1, v_all) and n_low <= .3 * max(1, n_lvl + n_low) and (seen_there or left_empty)
+            ok = v_lvl <= .25 * max(1, v_all) and n_low <= .3 * max(1, n_lvl + n_low) and (seen_there or left_empty) and o['y1'] + bj * c <= PLATE_Y + .03
         if not ok:
             o['mv'] = None
             return
@@ -437,6 +509,8 @@ class ObjectMemory:
             o['mv'] = None
             o['hist'].clear()
             self._note('물건 #%d 옮김 (x %+.0f, y %+.0f cm)', o['id'], bi * c * 100, bj * c * 100)
+            for q in self.objs:
+                q.pop('rest', None)                    # 상자가 움직이면 무게중심 변화가 병 때문이 아니다: 지금 자리를 기준으로 다시 잡는다
 
     def _moving_away(self, o, hm, g):
         """자리는 비었는데 바로 근처에 같은 높이 윗면이 넓게 있다 = 없어진 게 아니라 옮겨 가는 중."""
@@ -451,6 +525,7 @@ class ObjectMemory:
                 a0, a1 = max(0, int((q['x0'] - g['x0']) / c)), max(0, int(np.ceil((q['x1'] - g['x0']) / c)))
                 b0, b1 = max(0, int((q['y0'] - g['y0']) / c)), max(0, int(np.ceil((q['y1'] - g['y0']) / c)))
                 lvl[b0:b1, a0:a1] = False
+        lvl[g['y0'] + (np.arange(hm.shape[0]) + .5) * c > PLATE_Y] = False   # 판 뒤에 선 같은 높이 물건으로 옮겨 가는 것이 아니다
         near = int(lvl[j0:j1, i0:i1].sum())
         return near >= .4 * ((o['x1'] - o['x0']) * (o['y1'] - o['y0'])) / (c * c)
 
@@ -462,16 +537,26 @@ class ObjectMemory:
 
     def _gone(self, o, frame, t, load, hm):
         if o['kind'] == 'bottle' and o.get('light'):
+            if o.get('sup') is not None and not any(q['id'] == o['sup'] for q in self.objs):
+                return True                            # 받침 상자가 없어졌다: 옮긴 상자 그림자의 빈 칸을 병 자국으로 세지 않는다
             if self._mark_here(o) >= MARK_N:
                 o['seen'] = t
             return t - o['seen'] > LIGHT_GONE
         if o['kind'] == 'bottle':
             if t - o['seen'] < BOTTLE_GONE or load is None:   # 무게를 못 읽는 동안은 뺐는지 모른다 (값이 돌아오면 계단으로 본다)
                 return False
+            rest = o.get('rest')
+            if rest is not None and self._steady(t) and self.w is not None and abs(self.w - rest[0]) <= .25 * o['weight'] and (self.box_gone_t < o['born'] or (self.hand_cells < HAND_N and self._mark_here(o, nolow=True) < MARK_N)):
+                o['off_t'] = o.get('off_t') or t       # 빼는 계단을 놓쳐도 (손으로 눌렀다 뗐다) 총무게가 놓기 전으로 돌아오고 자국도 없으면 뺀 것이다
+                if t - o['off_t'] >= BOTTLE_OFF_S:
+                    self._note('물통 #%d 뺀 것으로 봄 (총무게가 놓기 전으로 돌아옴)', o['id'])
+                    return True
+            else:
+                o['off_t'] = None
             ev = self.drop_event
-            if ev is None or t - ev[0] > BOTTLE_EVENT_S or ev[0] < o['born'] or not max(BOTTLE_DROP[0], BOTTLE_DROP_PART * o['weight']) <= ev[1] <= BOTTLE_DROP[1]:
+            if ev is None or t - ev[0] > BOTTLE_LIFT_S or ev[0] < o['born'] or not max(BOTTLE_DROP[0], BOTTLE_DROP_PART * o['weight']) <= ev[1] <= BOTTLE_DROP[1]:
                 return False
-            if self._mark_here(o) >= MARK_N:
+            if self._mark_here(o, nolow=True) >= MARK_N:
                 return False                           # 그 자리에 자국이 그대로다: 다른 물건을 뺀 무게다 (자국이 사라지면 그때 뺀 것)
             others = [q for q in self.objs if q is not o and q['kind'] == 'bottle' and t - q['seen'] >= BOTTLE_GONE]
             if others and self._mark_here(o) > min(self._mark_here(q) for q in others):
@@ -546,10 +631,19 @@ class ObjectMemory:
             warnings.simplefilter('ignore', RuntimeWarning)
             mask = hm - exp > FLAT_RISE
         xs = g['x0'] + (np.arange(hm.shape[1]) + .5) * c
-        mask[:, np.abs(xs) > PLATE_X + .02] = False
+        yy = g['y0'] + (np.arange(hm.shape[0]) + .5) * c
+        mask[:, (xs < PLATE_X0 - .01) | (xs > PLATE_X + .02)] = False
+        mask[yy > PLATE_Y] = False                     # 판 뒤 물건과 한 덩어리로 묶이면 판 끝 상자까지 판 밖으로 버려진다
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
-            self.hand_cells = int(((hm - max([o['top'] for o in self.objs if o['kind'] != 'bottle'] + [floor]) > HAND_H) & (np.abs(xs) <= PLATE_X)[None, :]).sum())
+            on_plate = (np.abs(xs) <= PLATE_X)[None, :] & (yy <= PLATE_Y)[:, None]
+            high = (hm - max([o['top'] for o in self.objs if o['kind'] != 'bottle'] + [floor]) > HAND_H) & on_plate
+            if self.high_n is None or self.high_n.shape != high.shape:
+                self.high_n, self.high_z = np.zeros(high.shape, np.int32), hm.copy()
+            still = (hm - floor > HAND_H) & on_plate & (np.abs(hm - self.high_z) <= HAND_STILL_Z)   # 판 기준 (상자 윗면 기준이면 상자를 뺄 때 케이블이 새 손이 된다). 상자 위로 들어온 손은 높이가 달라 처음부터 다시 센다
+        self.high_z = np.where(still, self.high_z, hm)
+        self.high_n = (self.high_n + 1) * still
+        self.hand_cells = int((high & (self.high_n < HAND_STILL_N)).sum())
         if mask.sum() < FLAT_N:
             return []
         col = frame.get('col')
@@ -584,7 +678,10 @@ class ObjectMemory:
                 continue
             nb = dict(x0=g['x0'] + i0 * c, x1=g['x0'] + i1 * c, y0=g['y0'] + j0 * c, y1=g['y0'] + j1 * c,
                       top=float(np.median(hm[ys, xi])), bottom=float(np.median(exp[ys, xi])), kind='box', shape='box',
-                      direct=True, held=False, narrow=min(w, d) <= BOTTLE_NARROW)
+                      direct=True, held=False)
+            if (nb['y0'] + nb['y1']) / 2 > PLATE_Y:
+                continue
+            nb['narrow'] = min(w, d) <= BOTTLE_NARROW and nb['top'] - nb['bottom'] <= NARROW_H
             nb['color'] = np.clip(np.median(col[ys, xi], axis=0) / 255., 0, 1) if col is not None and np.shape(col)[:2] == hm.shape else (.6, .5, .4)
             if self._is_strip(nb):
                 continue
@@ -635,26 +732,71 @@ class ObjectMemory:
             return
         if (wide or self.hand_cells >= HAND_N) and age < BOTTLE_WAIT:   # 네모가 보이거나 아직 손이 있다
             return
-        mark = None if wide else self._bottle_mark(floor)
+        mark = None if wide else self._bottle_mark(floor, self.before, plate_needs_before=True)
+        if mark is not None and mark['n_up'] >= FLAT_FILL * mark['n'] and mark['flat'] >= FLAT_FILL and min(mark['mark_w'], mark['mark_d']) > BOX_MIN_SIDE:
+            mark = None                                # 병보다 넓고 평평한 네모: 내려놓는 중인 상자다 (2026-11-04: 21 x 14 cm 상자를 잠깐 물통으로 그렸다)
         if mark is not None and mark['n'] < mark['need']:
             mark = None                                # 자국이 병 크기만큼은 돼야 한다 (진짜 2 L 는 217 ~ 326 칸. 상자를 놓은 손을 뗄 때 +2112 g 인데 63 칸, 벨트 조일 때 82 칸)
         if mark is None:
             if age < BOTTLE_WAIT:
                 return
             self.up_event = None
+            if self._bottle_from_cap(ev, t, load, floor):
+                return
             self._note('물통 안 만듦 (무게 %+.0f g 인데 받침 위에 자국이 없음)', ev[1])
             self._box_settled(ev)
             return
         self.up_event = None
         rect = {k: mark[k] for k in ('x0', 'x1', 'y0', 'y1', 'axis', 'band', 'sup')}
         base = mark['base']
+        drop = self.drop_event
+        if drop is not None and t - drop[0] <= BOTTLE_LIFT_S and abs(drop[1] - ev[1]) <= BOTTLE_SAME * ev[1]:   # 방금 뺀 무게를 다시 놓았다: 겹치는 옛 물통은 옮겨 놓은 같은 병이다 (새 병이 옛 자리를 덮어 자국으로는 못 지운다)
+            for q in sorted([q for q in self.objs if q['kind'] == 'bottle' and q.get('sup') == rect['sup'] and _overlap_min(q, rect) > BOTTLE_SAME_OVER], key=lambda q: _overlap_min(q, rect))[-1:]:
+                self.objs.remove(q)
+                self.drop_event = None
+                self._note('물통 #%d 옮겨 놓음 (같은 무게 %.0f g)', q['id'], drop[1])
+                if q.get('before') is not None:
+                    self.before = q['before']
         fake = dict(color=(.7, .8, .9), shape='bottle')
         o = self._new(dict(rect, top=base + BOTTLE_2L[0]), fake, base, t, load, 'bottle')
         o['from_geom'] = dict(rect, top=o['top'])
         o['from_event'] = True
         o['weight'] = ev[1]
+        o['before'] = self.before                      # 놓기 전 사진: 다시 볼 때도 이 물통이 만든 변화만 본다
+        now = self._load(t - STEP_S, t) or self.w      # 놓기 전 무게 · 무게중심: 병 자리를 무게로 따라간다. 방금 든 병을 바로 놓아 안정된 값이 옛날이면 안 쓴다 (지금 자리로 다시 잡는다)
+        o['rest'] = self.rest if self.rest is not None and now is not None and abs(self.rest[0] + ev[1] - now) <= FOLLOW_G else None
+        for q in [q for q in self.objs if q is not o and q['kind'] == 'bottle' and q.get('rest') is not None]:
+            if now is not None and abs(now - ev[1] - q['rest'][0]) <= FOLLOW_G:   # 이 계단 직전 무게에 그 물통 무게가 안 들어 있다: 이미 판에서 빠진 옛 물통이다 (옮겨 놓은 같은 병)
+                self.objs.remove(q)
+                self.drop_event = None
+                self._note('물통 #%d 옮겨 놓음 (놓기 전 무게에 없음)', q['id'])
+        o['cap'] = mark['cap']
         self.up_chain = None                           # 이 무게는 이 물통 몫이다
         self._note('물건 #%d 생김: 물통 %s (무게 %+.0f g, 자국 %d 칸)', o['id'], '가로' if o['axis'] == 'x' else '세로', ev[1], mark['n'])
+
+    def _bottle_from_cap(self, ev, t, load, floor):
+        """자국이 안 잡혀도 (가까워서 깊이가 뚫림) 무게중심으로 낸 자리에서 병 길이의 절반 거리에 진짜 뚜껑이 보이면 물통이다."""
+        cog, now, rest = self._cog_now(t), self._load(t - STEP_S, t), self.rest
+        if cog is None or now is None or rest is None or abs(rest[0] + ev[1] - now) > FOLLOW_G or now - rest[0] <= 0:
+            return False
+        m = now - rest[0]
+        cx = CELL_CX - ((now * cog[0] - rest[0] * rest[1]) / m - BED_L / 2) / 1000
+        cy = CELL_CY + ((now * cog[1] - rest[0] * rest[2]) / m - BED_W / 2) / 1000
+        sup = self._support(cx, cy)
+        base = sup.get('level', sup['top']) if sup is not None else floor
+        if base is None:
+            return False
+        for x, y in self._find_caps(base):
+            dx, dy = x - cx, y - cy
+            if CAP_DIST[0] <= math.hypot(dx, dy) <= CAP_DIST[1]:
+                axis = 'x' if abs(dx) > abs(dy) else 'y'
+                o = self._new(dict(self._bottle_rect(cx, cy, axis), top=base + BOTTLE_2L[0]), dict(color=(.7, .8, .9), shape='bottle'), base, t, load, 'bottle')
+                self._place_bottle(o, cx, cy, axis, floor)
+                o.update(from_event=True, weight=ev[1], before=self.before, rest=rest, cap=(1 if dx > 0 else -1) if axis == 'x' else (1 if dy > 0 else -1))
+                self.up_chain = None
+                self._note('물건 #%d 생김: 물통 %s (무게 %+.0f g, 무게중심과 뚜껑으로)', o['id'], '가로' if axis == 'x' else '세로', ev[1])
+                return True
+        return False
 
     def _cold_bottle(self, t, load, floor):
         """켠 직후 (무게 기록이 없을 때): 상자 위 병 자국이 뚜렷하면 물통. 모양이 안 보이면 없어진다 (_gone)."""
@@ -665,19 +807,21 @@ class ObjectMemory:
             return
         if self.cold_w < COLD_G or t - self.t_start > COLD_MAX or self.cold_done or not any(o['kind'] != 'bottle' for o in self.objs):
             return
+        if self.hand_cells >= HAND_N:                  # 판 위 케이블도 처음 HAND_STILL_N 프레임은 손으로 세어진다: 기다리는 시간을 여기서 쓰지 않는다
+            return
         if self.t_box is None:
             self.t_box = t
         if t - self.t_box > COLD_S:
             self.cold_done = True
             return
-        if self.up_event is not None or self.hand_cells >= HAND_N or any(o['kind'] == 'bottle' for o in self.objs) or any(not b.get('narrow') for b in self.flat_now):
+        if self.up_event is not None or any(o['kind'] == 'bottle' for o in self.objs) or any(not b.get('narrow') for b in self.flat_now):
             return
         if self.w is None or abs(self.w - self.cold_w) > COLD_DW:   # 켠 뒤 무게가 변했다: 켜기 전부터 있던 물병이 아니다 (무게 계단이 정한다)
             self.cold_done = True
             return
         if load is None or abs(load - self.cold_w) > COLD_DW:       # 지금 막 무게가 변하는 중
             return
-        m = self._bottle_mark(floor)
+        m = self._bottle_mark(floor, plate_needs_before=True, past_support=True)   # 판 위는 안 본다 (사진이 없으면 전자부품이 병 자국으로 세어져 상자 위 병을 가린다)
         if m is None or not m['band'] or m['sup'] is None or m['n_up'] < BAND_N:
             return
         w, d = m['mark_w'], m['mark_d']
@@ -688,7 +832,144 @@ class ObjectMemory:
         o['from_geom'] = {k: m[k] for k in ('x0', 'x1', 'y0', 'y1')}
         o['from_geom']['top'] = m['base'] + .05        # 병 표면은 받침 위 몇 cm
         o['light'] = True
+        o['cap'] = m['cap']
         self._note('물건 #%d 생김: 물통 %s (켠 직후, 자국 %d 칸)', o['id'], '가로' if o['axis'] == 'x' else '세로', m['n'])
+
+    def _find_step(self, hm, floor):
+        """병이 얹혀 윗면이 대부분 가려진 상자를 찾는다. 상자 자리 dict (hi = 병 면 높이) 또는 None."""
+        g = self.grid
+        c = g['cell']
+        xs = g['x0'] + (np.arange(hm.shape[1]) + .5) * c
+        yy = g['y0'] + (np.arange(hm.shape[0]) + .5) * c
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            up = hm - floor > FLAT_RISE
+        up[:, (xs < PLATE_X0 - .02) | (xs > PLATE_X + .02)] = False
+        up[yy > PLATE_Y] = False
+        if up.sum() < FLAT_N:
+            return None
+        for grp in components(up):
+            if len(grp) < FLAT_N:
+                continue
+            ys, xi = grp[:, 0], grp[:, 1]
+            v = hm[ys, xi]
+            vals, n = np.unique(np.round(v / FLAT_TOL), return_counts=True)
+            hi = float(vals[n.argmax()]) * FLAT_TOL
+            near = np.abs(v - hi) <= FLAT_TOL
+            sub = np.zeros(hm.shape, bool)
+            sub[ys[near], xi[near]] = True
+            parts = components(sub)
+            if not parts:
+                continue
+            keep = max(parts, key=len)
+            i0, i1 = int(np.percentile(keep[:, 1], 2)), int(np.percentile(keep[:, 1], 98)) + 1
+            j0, j1 = int(np.percentile(keep[:, 0], 2)), int(np.percentile(keep[:, 0], 98)) + 1
+            w, d = (i1 - i0) * c, (j1 - j0) * c
+            if min(w, d) > BOTTLE_NARROW or not BOTTLE_L[0] <= max(w, d) <= BOTTLE_L[1]:
+                continue
+            aw = (int(np.percentile(xi[near], 98)) + 1 - int(np.percentile(xi[near], 2))) * c
+            ad = (int(np.percentile(ys[near], 98)) + 1 - int(np.percentile(ys[near], 2))) * c
+            if min(aw, ad) > BOTTLE_NARROW:            # 그 높이 전체는 넓다: 위 상자 윗면이 투명한 병에 갈린 것이지 병 면이 아니다
+                continue
+            front = hm[max(0, j0 - STEP_ROWS):j0, i0:i1]
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                low = (front - floor > FLAT_RISE) & (hi - front >= STEP_RISE[0]) & (hi - front <= STEP_RISE[1])
+            if low.sum() < STEP_PART * (i1 - i0):
+                continue
+            lv, ln = np.unique(np.round(front[low] / FLAT_TOL), return_counts=True)
+            lo = float(np.median(front[low][np.abs(front[low] - float(lv[ln.argmax()]) * FLAT_TOL) <= FLAT_TOL]))
+            if (np.abs(front - lo) <= FLAT_TOL).sum() < STEP_PART * (i1 - i0):
+                continue
+            inside = hm[j0:j1, i0:i1]
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                see = ~np.isfinite(inside) | (np.abs(inside - lo) <= .025)
+            caps = [q for q in self._find_caps(lo) if i0 * c + g['x0'] - CAP_OUT <= q[0] <= i1 * c + g['x0'] + CAP_OUT and j0 * c + g['y0'] - CAP_OUT <= q[1] <= j1 * c + g['y0'] + CAP_OUT]
+            if see.mean() < STEP_SEE and not caps:
+                continue                               # 뚫린 칸도 뚜껑도 없다: 낮은 상자 뒤의 높은 상자일 수 있다
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                lows = (ys < j0) & (np.abs(v - lo) <= STEP_RISE[0])    # 카메라 쪽 턱 칸 (윗면 모서리는 조금 낮게 찍힌다)
+            lx, ly = xi[lows], ys[lows]
+            if len(lx) < STEP_PART * (i1 - i0):        # 턱이 이 덩어리에 안 이어져 있다
+                continue
+            b0, b1 = int(np.percentile(lx, 2)), int(np.percentile(lx, 98)) + 1
+            col = self.col
+            color = np.clip(np.median(np.asarray(col)[ly, lx], axis=0) / 255., 0, 1) if col is not None and np.shape(col)[:2] == hm.shape else (.6, .5, .4)
+            y1 = max(g['y0'] + j1 * c, g['y0'] + j0 * c + BOTTLE_2L[0])   # 병 뒤쪽은 안 보인다: 병 하나 지름만큼은 상자 위다
+            return dict(x0=g['x0'] + b0 * c, x1=g['x0'] + b1 * c, y0=g['y0'] + int(np.percentile(ly, 2)) * c, y1=min(y1, PLATE_Y1),
+                        top=lo, bottom=floor, hi=hi, kind='box', shape='box', color=color, held=False)
+        return None
+
+    def _cold_step(self, t, load, floor, hm):
+        """켠 직후 무게 기록이 없을 때: 병이 얹힌 상자를 낮은 턱으로 만든다 (좁은 병 면을 긴 상자로 만들지 않게). 병은 다음 프레임부터 _cold_bottle 이 만든다."""
+        if self.t_start is None or self.want_restore or self.cold_w is None or self.cold_w < COLD_G or t - self.t_start > COLD_MAX or self.cold_done \
+                or hm is None or floor is None or self.w is None or abs(self.w - self.cold_w) > COLD_DW or not self._steady(t):
+            return
+        if any(o['kind'] != 'bottle' and o.get('from_step') for o in self.objs):
+            return
+        s = self._find_step(hm, floor)
+        self.step_hits = self.step_hits + 1 if s is not None else 0
+        if self.step_hits < STEP_HITS:
+            return
+        for o in list(self.objs):
+            if _overlap_min(o, s) <= .3:
+                continue
+            if o['kind'] != 'bottle' and abs(o['top'] - s['top']) <= TOP_TOL:
+                return                                 # 그 상자는 이미 있다
+            if o.get('light') or (o['kind'] != 'bottle' and abs(o['top'] - s['hi']) <= TOP_TOL + FLAT_TOL):
+                self.objs.remove(o)                    # 병 면을 상자나 병 모양 후보로 먼저 잡은 것
+                self._note('물건 #%d 지움 (병이 얹힌 상자로 다시 봄)', o['id'])
+        o = self._new({k: s[k] for k in ('x0', 'x1', 'y0', 'y1', 'top')}, s, s['bottom'], t, load, 'box')
+        o['level'] = s['top']
+        o['from_step'] = True
+        o['dw'] = None
+        self._note('물건 #%d 생김: 상자 %.0f x %.0f cm (켠 직후, 병이 얹혀 윗면 일부만 보임)', o['id'], (o['x1'] - o['x0']) * 100, (o['y1'] - o['y0']) * 100)
+
+    def _before_sample(self, t, hm):
+        """무게가 안정된 동안 높이맵 표본을 모은다. 표본끼리 많이 다르면 (손이 지나간다) 안 모은다."""
+        if hm is None or t - self.ring_t < (BEFORE_EVERY if len(self.ring) >= BEFORE_MIN else BEFORE_FAST) or self.hand_cells >= HAND_N:
+            return
+        self.ring_t = t
+        prev, self.ring_prev = self.ring_prev, hm
+        if prev is None or prev.shape != hm.shape:
+            self.ring.clear()
+            return
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            moved = np.abs(hm - prev) > BEFORE_MOVE
+        g = self.grid
+        moved = int(moved[g['y0'] + (np.arange(hm.shape[0]) + .5) * g['cell'] <= PLATE_Y][:, np.abs(g['x0'] + (np.arange(hm.shape[1]) + .5) * g['cell']) <= PLATE_X + .05].sum())   # 판 위 칸만 (판 뒤 사람은 상관없다)
+        if moved <= BEFORE_QUIET:
+            self.ring.append(hm)
+
+    def _freeze_before(self):
+        """무게가 올라간 첫 계단: 모은 표본으로 '놓기 전 사진' 을 얼린다. 표본이 모자라면 지난 사진을 그대로 쓴다 (상자가 없어진 뒤라 지난 사진이 틀리면 한 장이라도 쓴다)."""
+        if len(self.ring) >= (1 if self.before_stale else BEFORE_MIN):
+            self.before_stale = False
+            use = list(self.ring)
+            use = use[:max(BEFORE_MIN, len(use) - BEFORE_DROP)]
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                self.before = np.nanmedian(np.stack(use), 0)
+        elif self.before is None:
+            self.before = self.bg0
+        self.ring.clear()
+
+    @staticmethod
+    def _rose(before, hm):
+        """놓기 전보다 높아졌거나 놓기 전에 값이 없던 칸."""
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            return ~np.isfinite(before) | (hm - before > BEFORE_UP)
+
+    @staticmethod
+    def _fell(before, hm):
+        """놓기 전보다 낮아진 칸 (병을 통과해 낮게 찍힌 깊이)."""
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            return hm - before < -BEFORE_DOWN
 
     def _steps(self, t, hm=None):
         """총무게가 안정될 때마다 전과 비교한다: 장력이 그대로인데 내려갔으면 물건을 뺀 계단으로 기억한다."""
@@ -700,13 +981,18 @@ class ObjectMemory:
         c1, c2 = (float(np.median([b[i] for b in bs])) for i in (1, 2)) if bs else (None, None)
         if self.level is None:
             self.level = (now, c1, c2)
-            self.bg = hm
+            self.bg = self.bg0 = hm
             return
         prev, p1, p2 = self.level
         belt = c1 is not None and p1 is not None and (abs(c1 - p1) >= BELT_CHANGE or abs(c2 - p2) >= BELT_CHANGE)
         if abs(now - prev) < STEP_MIN and not belt:
             if hm is not None and self.up_event is None and not any(o['kind'] == 'bottle' for o in self.objs):
                 self.bg = hm
+            if self.up_event is None and t - self.up_t > BOTTLE_CHAIN:
+                self._before_sample(t, hm)
+                cog = self._cog_now(t)
+                if cog is not None:
+                    self.rest = (now, cog[0], cog[1], c1, c2)
             return
         if now < prev and not belt and self.up_chain is not None and t - self.up_chain[0] <= BOTTLE_CHAIN and now - self.up_chain[1] >= BOTTLE_G[0]:
             self.up_event = (t, now - self.up_chain[1])   # 눌렀던 손을 뗐다: 처음과 비교한 무게가 진짜다
@@ -715,14 +1001,125 @@ class ObjectMemory:
         if now < prev:
             self.up_chain = None
         if not belt and now < prev:
-            if not self._box_drop(t, prev - now):      # 방금 없어진 상자의 무게가 아닐 때만 '물통을 뺀 계단' 후보
+            self.ring.clear()
+            if self.up_event is not None and prev - now >= BOTTLE_DROP_PART * self.up_event[1]:
+                self.up_event = None                   # 놓았다가 물통을 만들기 전에 도로 뺐다: 무게가 이미 없다
+            old = self.drop_event
+            if not self._box_drop(t, prev - now) and (old is None or t - old[0] > BOTTLE_LIFT_S or prev - now >= BOTTLE_DROP_PART * BOTTLE_G[0]):      # 방금 없어진 상자의 무게가 아닐 때만 '물통을 뺀 계단' 후보. 물병보다 가벼운 출렁임 (손으로 눌렀다 뗐다) 이 물통을 뺀 계단을 덮어쓰지 않게 (2026-11-03: -1915 g 뒤 -772 g)
                 self.drop_event = (t, prev - now)
         elif not belt:
             base = self.up_chain[1] if self.up_chain is not None and t - self.up_chain[0] <= BOTTLE_CHAIN else prev
+            if base == prev and (t - self.up_t > LATE_S or any(o['born'] >= self.up_t for o in self.objs)):   # 앞 계단이 아직 물건을 안 만들었으면 (손으로 받친 채 멈췄다 마저 놓는다) 그 전 사진을 그대로 쓴다
+                self._freeze_before()
+            elif base == prev:
+                self.ring.clear()                      # 이 표본에는 놓는 물건이 없거나 병이 찍혀 있다: 다음 사진에 쓰면 앞 물병 칸이 새 칸이 된다
             self.up_chain = (t, base)
             self.up_event = (t, now - base)            # 손을 떼는 동안 무게가 두 번에 나뉘어 올라도 한 번으로 본다
             self.up_t = t
         self.level = (now, c1, c2)
+
+    def _cog_now(self, t):
+        """지금 무게중심 (mm). 가감속 · 흔들림 없이 STEP_S 초 이어졌을 때만."""
+        v = [q for q in self.cogs if t - q[0] <= STEP_S]
+        if len(v) < 5 or not self._steady(t):
+            return None
+        return float(np.median([q[1] for q in v])), float(np.median([q[2] for q in v]))
+
+    def _bottle_est(self, o, t):
+        """무게중심으로 낸 병 가운데 (카메라 좌표 m). 놓기 전 값이 없거나 다른 물건 무게가 섞였으면 지금 자리를 기준으로 다시 잡고 None."""
+        cog = self._cog_now(t)
+        now = self._load(t - STEP_S, t)
+        if cog is None or now is None:
+            return None
+        rest, w = o.get('rest'), o['weight']
+        bs = [b for b in self.belts if t - STEP_S <= b[0] <= t]
+        c1, c2 = (float(np.median([b[i] for b in bs])) for i in (1, 2)) if bs else (None, None)
+        belt = rest is not None and c1 is not None and None not in rest[3:] and (abs(c1 - rest[3]) > FOLLOW_BELT or abs(c2 - rest[4]) > FOLLOW_BELT)
+        if rest is None or belt or (abs(now - rest[0] - w) > FOLLOW_G and abs(now - rest[0]) > .25 * w):
+            cx, cy = (o['x0'] + o['x1']) / 2, (o['y0'] + o['y1']) / 2
+            bx, by = BED_L / 2 - (cx - CELL_CX) * 1000, BED_W / 2 + (cy - CELL_CY) * 1000
+            if now - w > 0:                            # 지금 자리에 병이 있다고 두고 나머지 무게 · 무게중심을 낸다
+                o['rest'] = (now - w, (now * cog[0] - w * bx) / (now - w), (now * cog[1] - w * by) / (now - w), c1, c2)
+            return None
+        m = now - rest[0]
+        if abs(m - w) > FOLLOW_G:
+            return None                                # 들고 있거나 일부만 얹혔다
+        return (CELL_CX - ((now * cog[0] - rest[0] * rest[1]) / m - BED_L / 2) / 1000, CELL_CY + ((now * cog[1] - rest[0] * rest[2]) / m - BED_W / 2) / 1000)
+
+    def _place_bottle(self, o, cx, cy, axis, floor):
+        """병 가운데 · 방향으로 자리를 고친다 (크기는 2 L 고정)."""
+        r, half = BOTTLE_2L[0] / 2, BOTTLE_2L[1] / 2
+        rect = dict(x0=cx - r, x1=cx + r, y0=cy - half, y1=cy + half) if axis == 'y' else dict(x0=cx - half, x1=cx + half, y0=cy - r, y1=cy + r)
+        sup = self._support(cx, cy)
+        o.update(rect, axis=axis, sup=None if sup is None else sup['id'], band=True)
+        o['from_geom'] = dict(rect, top=o['top'])
+
+    def _unchanged(self, o, rect):
+        """이 자리에 놓기 전 사진과 같은 칸 수 (보이는 칸만). 사진이 없으면 None."""
+        before, hm, g = o.get('before'), self.hm, self.grid
+        if before is None or hm is None or before.shape != hm.shape:
+            return None
+        c = g['cell']
+        i0, i1 = max(0, int(round((rect['x0'] - g['x0']) / c))), max(0, int(round((rect['x1'] - g['x0']) / c)))
+        j0, j1 = max(0, int(round((rect['y0'] - g['y0']) / c))), max(0, int(round((rect['y1'] - g['y0']) / c)))
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            return int((np.abs(hm[j0:j1, i0:i1] - before[j0:j1, i0:i1]) <= BEFORE_UP).sum())
+
+    def _bottle_follow(self, o, t, floor):
+        """무게중심으로 자리, 뚜껑으로 방향을 따라간다. 물통이 하나일 때만 (둘이면 어느 병이 움직였는지 모른다)."""
+        if sum(q['kind'] == 'bottle' for q in self.objs) != 1:
+            return None
+        est = self._bottle_est(o, t)
+        if est is None:
+            o['far_n'] = 0
+            return None
+        cx, cy = (o['x0'] + o['x1']) / 2, (o['y0'] + o['y1']) / 2
+        axis = 'x' if o['x1'] - o['x0'] > o['y1'] - o['y0'] else 'y'
+        caps = [(q[0] - est[0], q[1] - est[1]) for q in self._find_caps(o['top'] - BOTTLE_2L[0])]
+        seen = [q for q in caps if CAP_DIST[0] <= math.hypot(*q) <= CAP_DIST[1]]
+        pos = est
+        if seen:                                       # 뚜껑이 보이면 뚜껑이 더 정확하다 (무게중심은 몇 cm 오차)
+            dx, dy = max(seen, key=lambda q: math.hypot(*q))
+            want = ('x', 1 if dx > 0 else -1) if abs(dx) > abs(dy) else ('y', 1 if dy > 0 else -1)
+            half = BOTTLE_2L[1] / 2 - CAP_R
+            pos = (est[0] + dx - want[1] * half, est[1] + dy) if want[0] == 'x' else (est[0] + dx, est[1] + dy - want[1] * half)
+        elif self._mark_here(o, nolow=True) >= MARK_N:  # 병이 그 자리에 그대로 보인다: 무게중심이 움직인 것은 다른 이유다
+            o['far_n'] = 0
+            return est
+        if not (PLATE_X0 - .1 <= pos[0] <= PLATE_X1 + .1 and pos[1] <= PLATE_Y1 + .02):
+            o['far_n'] = 0
+            return None                                # 판 밖: 무게중심 값을 믿을 수 없다
+        o['far_n'] = o.get('far_n', 0) + 1 if math.hypot(pos[0] - cx, pos[1] - cy) > FOLLOW_MOVE else 0
+        if o['far_n'] >= FOLLOW_N:
+            self._place_bottle(o, pos[0], pos[1], axis, floor)
+            o['far_n'] = 0
+            self._note('물건 #%d 물통 옮김 (x %.2f, y %.2f)', o['id'], pos[0], pos[1])
+        if seen:
+            o['cap_miss'] = 0
+            o['cap_vote'] = (want, o['cap_vote'][1] + 1) if o.get('cap_vote') and o['cap_vote'][0] == want else (want, 1)
+            if o['cap_vote'][1] >= CAP_VOTES and (want[0] != axis or o.get('cap') != want[1]):
+                if want[0] != axis:
+                    self._note('물건 #%d 물통 돌림 (%s, 뚜껑으로)', o['id'], '가로' if want[0] == 'x' else '세로')
+                self._place_bottle(o, pos[0], pos[1], want[0], floor)
+                o['cap'] = want[1]
+        elif axis == 'y' and (self._unchanged(o, o) or 0) >= AXIS_EMPTY_N:   # 세로 자리가 보이는데 비어 있다: 시야 밖으로 가로로 누워 있다
+            o['cap_miss'] = o.get('cap_miss', 0) + 1
+            if o['cap_miss'] >= CAP_MISS_N:
+                self._note('물건 #%d 물통 돌림 (가로, 세로 자리가 비어 있음)', o['id'])
+                self._place_bottle(o, est[0], est[1], 'x', floor)
+                o['cap'] = None
+                o['cap_miss'] = 0
+        elif axis == 'x' and o.get('cap') in (-1, 1):  # 가로면 뚜껑이 시야 안일 자리인데 안 보인다: 뚜껑이 먼 쪽으로 간 세로다
+            sx, sy = est[0] + o['cap'] * BOTTLE_2L[1] / 2, est[1]
+            inside = sy < FOV_K * (FOV_Z - (o['top'] - .05)) - .02 and abs(sx) < .25
+            o['cap_miss'] = o.get('cap_miss', 0) + 1 if inside else 0
+            if o['cap_miss'] >= CAP_MISS_N:
+                self._note('물건 #%d 물통 돌림 (세로, 뚜껑이 안 보임)', o['id'])
+                self._place_bottle(o, est[0], est[1], 'y', floor)
+                o['cap'] = 1
+                o['cap_miss'] = 0
+        return est
 
     def _drop_fits(self, o, drop):
         """이 무게 계단이 이 상자 무게로 설명되나. 상자 무게를 모르면 큰 물건이 빠진 것만 친다."""
@@ -829,9 +1226,10 @@ class ObjectMemory:
         base = sup['top'] if sup is not None else -1.0
         return any(q is not sup and q['kind'] != 'bottle' and q['top'] > base + .02 and _overlap_min(q, rect) > .15 for q in self.objs)
 
-    def _bottle_mark(self, floor):
+    def _bottle_mark(self, floor, before=None, plate_needs_before=False, past_support=False):
         """받침 위의 병 자국을 찾아 물통 자리 · 방향을 낸다. 없으면 None.
-        상자마다 윗면 안에서 윗면보다 높은 칸 + 값이 없어진 칸을 세어 가장 많은 받침을 고른다. 빈 판은 값이 원래 잘 빠져서 높은 칸이 있어야 한다."""
+        상자마다 윗면 안에서 윗면보다 높은 칸 + 값이 없어진 칸을 세어 가장 많은 받침을 고른다. 빈 판은 값이 원래 잘 빠져서 높은 칸이 있어야 한다.
+        before = 놓기 전 사진: 있으면 그때보다 높아진 칸만 '높은 칸' 이다. plate_needs_before: 사진이 없으면 판 위는 안 본다 (판 위 전자부품을 병으로 칠 수 있다)."""
         hm, g = self.hm, self.grid
         if hm is None or not g:
             return None
@@ -844,18 +1242,22 @@ class ObjectMemory:
         fin = np.isfinite(hm)
         was = np.isfinite(self.bg) if self.bg is not None and self.bg.shape == hm.shape else np.ones(hm.shape, bool)
         xs = g['x0'] + (np.arange(hm.shape[1]) + .5) * c
+        yy = g['y0'] + (np.arange(hm.shape[0]) + .5) * c
+        rose = self._rose(before, hm) if before is not None and before.shape == hm.shape else None
+        fell = self._fell(before, hm) if rose is not None else np.zeros(hm.shape, bool)
         boxes = [o for o in self.objs if o['kind'] != 'bottle']
         best = None
         for S in sorted(boxes, key=lambda q: q['top'], reverse=True) + [None]:
             base = S.get('level', S['top']) if S is not None else floor
-            if base is None:
+            if base is None or (S is None and plate_needs_before and rose is None):
                 continue
             region = np.zeros(hm.shape, bool)
             if S is not None:
                 i0, i1, j0, j1 = cells(S)
                 region[j0 + 1:max(j0 + 1, j1 - 1), i0 + 1:max(i0 + 1, i1 - 1)] = True     # 상자가 조금 밀려도 가장자리는 안 친다
             else:
-                region[:, np.abs(xs) <= PLATE_X + .03] = True
+                region[:, (xs >= PLATE_X0 - .01) & (xs <= PLATE_X + .03)] = True
+                region[yy > PLATE_Y] = False
                 for q in boxes:
                     i0, i1, j0, j1 = cells(q, 2)
                     region[j0:j1, i0:i1] = False
@@ -866,8 +1268,10 @@ class ObjectMemory:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', RuntimeWarning)
                 up = region & fin & (hm - base > BAND_LOW) & (hm - base < BAND_TOP)
+            if rose is not None:
+                up &= rose
             lost = region & ~fin & was
-            occ = up | lost
+            occ = up | lost | (region & fell)
             if occ.sum() < MARK_N:
                 continue
             grow = occ.copy()                          # 투명해서 칸이 군데군데 빈다: 한 칸씩 넓혀 이은 뒤 묶는다
@@ -903,6 +1307,23 @@ class ObjectMemory:
             w, d = (i1 - i0) * c, (j1 - j0) * c
             if max(w, d) >= MARK_RATIO * min(w, d):
                 axis = 'x' if w > d else 'y'
+        if axis == 'x' and past_support and best['S'] is not None and best['n_up'] >= BAND_N:    # 켠 직후: 받침 안 자국은 벨트 + 받침 밖으로 나간 병이면 넓적해 보인다. 병 면을 받침 밖까지 이어 재 본다
+            vals, cnt = np.unique(np.round(hm[best['u']] / FLAT_TOL), return_counts=True)
+            hi = float(vals[cnt.argmax()]) * FLAT_TOL
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                face = np.abs(hm - hi) <= FLAT_TOL
+            grown = face.copy()                        # 투명 · 뽁뽁이라 칸이 군데군데 빈다: 한 칸씩 넓혀 잇는다
+            grown[1:, :] |= face[:-1, :]; grown[:-1, :] |= face[1:, :]; grown[:, 1:] |= face[:, :-1]; grown[:, :-1] |= face[:, 1:]
+            pieces = [q for q in components(grown) if best['u'][q[:, 0], q[:, 1]].any()]
+            if pieces:
+                q = max(pieces, key=len)
+                on = np.zeros(hm.shape, bool)
+                on[q[:, 0], q[:, 1]] = True
+                on &= face
+                a0, a1, b0, b1 = extent(on)
+                if (b1 - b0) * c >= BAND_LONG and (b1 - b0) >= BAND_RATIO * (a1 - a0):
+                    axis, use = 'y', on
         i0, i1, j0, j1 = extent(use)
         r, L = BOTTLE_2L[0] / 2, BOTTLE_2L[1]
         front = g['y0'] + extent(best['occ'])[2] * c if use is best['occ'] else g['y0'] + j0 * c    # 카메라 쪽 끝은 그림자가 없어 믿을 수 있다
@@ -911,6 +1332,8 @@ class ObjectMemory:
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', RuntimeWarning)
                 band = fin & (hm - best['base'] > BAND_LOW) & (hm - best['base'] < BAND_TOP)
+            if rose is not None:
+                band &= rose
             row0, row1 = j0, max(j0 + 1, j1)
             ii = np.nonzero(band[row0:row1].any(0) & (np.abs(xs) <= PLATE_X + .10))[0]
             if len(ii) >= 3:
@@ -918,42 +1341,50 @@ class ObjectMemory:
             rect = dict(x0=cx - L / 2, x1=cx + L / 2, y0=front, y1=front + 2 * r)
         else:
             rect = dict(x0=cx - r, x1=cx + r, y0=front, y1=front + L)
-        capped = False                                 # 뚜껑이 물병 끝 근처에 보이면 그 끝을 뚜껑에 맞춘다 (상자 밖으로 나온 부분은 자국에 안 잡힌다)
-        caps = self._find_caps(best['base'])
+        cap = None                                     # 뚜껑이 물병 끝 근처에 보이면 그 끝을 뚜껑에 맞춘다 (상자 밖으로 나온 부분은 자국에 안 잡힌다). -1 = x0 · y0 쪽, 1 = x1 · y1 쪽
+        caps = self._find_caps(best['base'], rose)
         for x, y in caps if axis is not None else ():
             if axis == 'y' and abs(x - (rect['x0'] + rect['x1']) / 2) <= CAP_SIDE:
                 if rect['y0'] - CAP_OUT <= y <= rect['y0'] + CAP_IN:
                     rect.update(y0=y - CAP_R, y1=y - CAP_R + L)
-                    capped = True
+                    cap = -1
                 elif rect['y1'] - CAP_IN <= y <= rect['y1'] + CAP_OUT:
                     rect.update(y0=y + CAP_R - L, y1=y + CAP_R)
-                    capped = True
+                    cap = 1
             elif axis == 'x' and abs(y - (rect['y0'] + rect['y1']) / 2) <= CAP_SIDE:
                 if rect['x0'] - CAP_OUT <= x <= rect['x0'] + CAP_IN:
                     rect.update(x0=x - CAP_R, x1=x - CAP_R + L)
-                    capped = True
+                    cap = -1
                 elif rect['x1'] - CAP_IN <= x <= rect['x1'] + CAP_OUT:
                     rect.update(x0=x + CAP_R - L, x1=x + CAP_R)
-                    capped = True
-            if capped:
+                    cap = 1
+            if cap is not None:
                 break
         S = best['S']
+        if S is None and cap is None:                  # 판 위 병은 뚜껑이 안 보이면 끝을 모른다 (보이는 칸만으로는 판 밖으로 밀린다): 판 끝 안으로 되민다
+            over = max(rect['x1'] - PLATE_X1 - .01, 0) - max(PLATE_X0 - .01 - rect['x0'], 0)
+            rect.update(x0=rect['x0'] - over, x1=rect['x1'] - over)
+            over = max(rect['y1'] - PLATE_Y1 - .01, 0)
+            rect.update(y0=rect['y0'] - over, y1=rect['y1'] - over)
         side = 100.0 if S is None else min(S['x1'] - S['x0'], S['y1'] - S['y0']) / c    # 받침의 짧은 쪽 (칸)
         need = min(MARK_STRONG, MARK_PART * BOTTLE_2L[0] / c * min(BOTTLE_2L[1] / c, side))
-        return dict(rect, capped=capped, caps=caps, need=need, axis=axis or 'y', band=axis is not None, sup=None if S is None else S['id'], base=best['base'], n=best['n'], n_up=best['n_up'],
+        zs = hm[best['u']]
+        flat = float((np.abs(zs - np.median(zs)) <= FLAT_TOL).mean()) if len(zs) else 0.0
+        return dict(rect, flat=flat, capped=cap is not None, cap=cap, caps=caps, need=need, axis=axis or 'y', band=axis is not None, sup=None if S is None else S['id'], base=best['base'], n=best['n'], n_up=best['n_up'],
                     mark_w=(i1 - i0) * c, mark_d=(j1 - j0) * c)
 
-    def _bottle_fit(self, cx, cy, floor):
-        """자국을 모를 때 (켠 직후 뚜껑만 보일 때): 세로로 두되 다른 상자에 걸리면 가로."""
-        rect = self._bottle_rect(cx, cy, 'y')
+    def _bottle_fit(self, cx, cy, floor, axis='y'):
+        """자국을 모를 때 (켠 직후 뚜껑만 보일 때): axis 방향으로 두되 다른 상자에 걸리면 반대로."""
+        rect = self._bottle_rect(cx, cy, axis)
         if self._blocked(rect, cx, cy):
-            other = self._bottle_rect(cx, cy, 'x')
+            turn = 'x' if axis == 'y' else 'y'
+            other = self._bottle_rect(cx, cy, turn)
             if not self._blocked(other, cx, cy):
-                return dict(other, axis='x', band=False)
-        return dict(rect, axis='y', band=False)
+                return dict(other, axis=turn, band=False)
+        return dict(rect, axis=axis, band=False)
 
-    def _mark_here(self, o):
-        """이 물통 자리에 아직 자국이 있나 (칸 수)."""
+    def _mark_here(self, o, nolow=False):
+        """이 물통 자리에 아직 자국이 있나 (칸 수). nolow: 자리 대부분이 낮으면 안 센다 (받침 뚜껑이 통째로 눌린 채면 병을 빼도 낮다. 일부만 낮으면 굴절된 병 칸이다)."""
         hm, g = self.hm, self.grid
         if hm is None or not g:
             return 0
@@ -963,9 +1394,15 @@ class ObjectMemory:
         v = hm[j0:j1, i0:i1]
         base = o['top'] - BOTTLE_2L[0]
         was = np.isfinite(self.bg[j0:j1, i0:i1]) if self.bg is not None and self.bg.shape == hm.shape else np.ones(v.shape, bool)
+        before = o.get('before')
+        known = before is not None and before.shape == hm.shape
+        new = self._rose(before, hm)[j0:j1, i0:i1] if known else True
+        low = self._fell(before, hm)[j0:j1, i0:i1] if known else False
+        if nolow and known and np.size(low) and np.mean(low) >= LOW_FRAC:
+            low = False
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
-            return int((~np.isfinite(v) & was).sum() + (v - base > BAND_LOW).sum())    # 값이 없어진 칸 (원래 값이 있던 곳만) + 받침보다 높은 칸
+            return int((~np.isfinite(v) & was).sum() + (((v - base > BAND_LOW) & new) | low).sum())    # 값이 없어진 칸 (원래 값이 있던 곳만) + 받침보다 높은 칸 + 낮아진 칸 (놓기 전 사진이 있으면 그때와 달라진 칸만)
 
     @staticmethod
     def _cap_at_end(o, cap):
@@ -990,11 +1427,46 @@ class ObjectMemory:
         was = np.isfinite(self.bg)[part] if self.bg is not None and self.bg.shape == hm.shape else np.ones(v.shape, bool)
         base = o['top'] - BOTTLE_2L[0]
         fin = np.isfinite(v)
-        empty = int((v[fin] - base <= BAND_LOW).sum())
-        marked = int((v[fin] - base > BAND_LOW).sum() + (~fin & was).sum())
+        before = o.get('before')
+        high = v[fin] - base > BAND_LOW
+        if before is not None and before.shape == hm.shape:
+            high = (high & self._rose(before, hm)[part][fin]) | self._fell(before, hm)[part][fin]
+        marked = int(high.sum() + (~fin & was).sum())
+        empty = int(fin.sum()) - int(high.sum())
         return empty / max(1, empty + marked)
 
-    def _find_caps(self, base):
+    def _forget_box(self, o):
+        """놓기 전 사진에 찍힌 없어진 상자 칸을 지운다 (그대로 쓰면 그 자리 전체가 낮아진 칸, 곧 병 자국으로 세어진다).
+        상자 높이의 칸만 지우고, 켠 뒤 첫 사진이 그 아래를 봤으면 그 값을 쓴다 (전자부품 칸까지 '모름' 이 되면 새 칸, 곧 병 표면으로 세어진다)."""
+        g = self.grid
+        if not g:
+            return
+        c = g['cell']
+        i0, i1 = max(0, int((o['x0'] - g['x0']) / c) - 2), max(0, int(np.ceil((o['x1'] - g['x0']) / c)) + 2)
+        j0, j1 = max(0, int((o['y0'] - g['y0']) / c) - 2), max(0, int(np.ceil((o['y1'] - g['y0']) / c)) + 2)
+
+        def blank(b):
+            b = b.copy()
+            sub = b[j0:j1, i0:i1]
+            mid = (o['bottom'] + o['top']) / 2
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)
+                gone = ~(sub <= mid)
+                sub[gone] = np.nan
+                if self.bg0 is not None and self.bg0.shape == b.shape:
+                    old = self.bg0[j0:j1, i0:i1]
+                    under = gone & (old <= mid)
+                    sub[under] = old[under]
+            return b
+
+        self.before_stale = True
+        if self.before is not None:
+            self.before = blank(self.before)
+        for q in self.objs:
+            if q.get('before') is not None:
+                q['before'] = blank(q['before'])
+
+    def _find_caps(self, base, rose=None):
         """파란 덩어리 중 받침 위 병 높이에 있는 것들의 자리 [(x, y), ...]. 물병에 비친 파란색도 섞이므로 쓰는 쪽에서 물병 끝에 있는 것을 고른다."""
         hm, g, col = self.hm, self.grid, self.col
         if col is None or np.shape(col)[:2] != hm.shape:
@@ -1006,7 +1478,10 @@ class ObjectMemory:
         c = g['cell']
         out = []
         for part in components(blue):
-            if len(part) < CAP_N:
+            if len(part) < CAP_N or (rose is not None and rose[part[:, 0], part[:, 1]].mean() < CAP_ROSE):
+                continue
+            c_ = col[part[:, 0], part[:, 1]]
+            if float(np.median(c_[:, 2] / np.maximum(c_[:, 0], 1.0))) < CAP_BLUE:
                 continue
             z = hm[part[:, 0], part[:, 1]]
             z = z[np.isfinite(z)]
@@ -1020,11 +1495,15 @@ class ObjectMemory:
                 or sum(q['kind'] == 'bottle' for q in self.objs) != 1:
             return
         o['fit_t'] = t
-        m = self._bottle_mark(floor)
+        m = self._bottle_mark(floor, o.get('before'), plate_needs_before=True)
         if m is None or not m['band'] or m['n'] < m['need']:   # 자국이 병 크기가 안 되면 믿지 않는다 (만들 때와 같은 기준)
             o['fit_last'] = None
             return
         cx, cy = (m['x0'] + m['x1']) / 2, (m['y0'] + m['y1']) / 2
+        est = self._bottle_est(o, t)
+        if est is not None and math.hypot(est[0] - cx, est[1] - cy) > BOTTLE_MOVE:
+            o['fit_last'] = None                       # 무게중심이 아는 병 자리와 멀다: 전자부품 · 손이 자국처럼 보인 것
+            return
         same_place = m['axis'] == o.get('axis') and math.hypot((o['x0'] + o['x1']) / 2 - cx, (o['y0'] + o['y1']) / 2 - cy) <= BOTTLE_MOVE and m['sup'] == o.get('sup')
         if not same_place and (m['n_up'] < MOVE_UP or any(self._cap_at_end(o, q) for q in m['caps'])):
             o['fit_last'] = None                       # 병 표면이 뚜렷하지 않거나 뚜껑이 그대로다: 벨트 · 손이 자국처럼 보인 것
@@ -1039,11 +1518,13 @@ class ObjectMemory:
             return                                     # 원래 자리에 병이 그대로 있다: 벨트 · 손이 자국처럼 보인 것
         if same_place:                                 # 같은 자리: 뚜껑이 보이면 길이 방향만 뚜껑에 맞춘다
             keys = ('x0', 'x1') if m['axis'] == 'x' else ('y0', 'y1')
-            if m['capped'] and abs(o[keys[0]] - m[keys[0]]) > CAP_MOVE:
-                o.update({k: m[k] for k in keys})
+            if m['capped']:
+                o['cap'] = m['cap']
+                if abs(o[keys[0]] - m[keys[0]]) > CAP_MOVE:
+                    o.update({k: m[k] for k in keys})
             return
         self._note('물건 #%d 물통 자리 고침 (%s, 자국 %d 칸)', o['id'], '가로' if m['axis'] == 'x' else '세로', m['n'])
-        o.update({k: m[k] for k in ('x0', 'x1', 'y0', 'y1', 'axis', 'sup')})
+        o.update({k: m[k] for k in ('x0', 'x1', 'y0', 'y1', 'axis', 'sup', 'cap')})
         o['from_geom'] = {k: m[k] for k in ('x0', 'x1', 'y0', 'y1')}
         o['from_geom']['top'] = m['base'] + BOTTLE_2L[0]
 
@@ -1055,7 +1536,14 @@ class ObjectMemory:
             if q['kind'] != 'bottle' and t - q['born'] <= MERGE_S and _overlap_min(q, g) > .7 and abs(q['top'] - g['top']) <= MERGE_TOP:
                 q['top'] = q['level'] = max(q['top'], g['top'])   # 방금 만든 상자를 내려놓는 중: 윗면만 따라간다
                 return True
-        if dw is None or math.isnan(dw) or dw < BOTTLE_G[0]:
+        if dw is None or math.isnan(dw):
+            return False
+        for q in [o for o in self.objs if o['kind'] != 'bottle' and t - o['born'] <= MERGE_S and o.get('dw') is not None]:
+            if _overlap_min(q, g) > .7 and abs(dw - q['dw']) <= MERGE_G and abs(q['top'] - g['top']) <= STACK_SAME:
+                q['top'] = q['level'] = max(q['top'], g['top'])   # 놓으면서 무게가 더 안 늘었는데 같은 자리에 다른 높이: 내려놓는 중인 한 상자를 위아래 둘로 잡은 것이다 (2026-11-04: .46 + .51)
+                self._note('물건 #%d 윗면 고침 (같은 상자, 무게 %+.0f g)', q['id'], dw)
+                return True
+        if dw < BOTTLE_G[0]:
             return False
         for q in [o for o in self.objs if o['kind'] != 'bottle' and t - o['born'] <= MERGE_S and o.get('dw') is not None]:
             common = min(q['x1'], g['x1']) - max(q['x0'], g['x0'])
@@ -1092,10 +1580,12 @@ class ObjectMemory:
         if kind == 'bottle' or cap:                    # 병 모양 후보는 켠 직후에만 (무게 기록이 없을 때). 그 뒤로는 무게 계단 + 자국이 정한다
             if dw is not None or any(o['kind'] == 'bottle' for o in self.objs):
                 return
+            if self._support((g['x0'] + g['x1']) / 2, (g['y0'] + g['y1']) / 2) is not None and not self.cold_done:
+                return                                 # 받침 상자가 있으면 자리 · 방향은 병 자국이 정한다 (_cold_bottle)
             kind = 'bottle'
         elif dw is not None and math.isnan(dw):        # 벨트를 조이거나 푸는 중
             return
-        elif direct and p['c'].get('narrow') and (dw is None or BOTTLE_G[0] <= dw < BOTTLE_G[1] or (dw < BOTTLE_G[1] and any(o['kind'] == 'bottle' for o in self.objs))):
+        elif direct and p['c'].get('narrow') and (dw is None or BOTTLE_G[0] <= dw < BOTTLE_G[1] or (dw < BOTTLE_G[1] and any(o['kind'] == 'bottle' or (o.get('from_step') and _overlap_min(o, g) > .3) for o in self.objs))):
             return                                     # 물병 폭의 띠: 무게가 물병만큼 늘었거나 물통이 있으면 병 표면이다 (2 L 보다 무거우면 좁아도 상자, 좁은 띠는 손을 뗀 뒤에만 본다)
         elif not direct:                               # 후보(cargo_model): 네모로 확인되거나, 무게가 상자만큼 늘고 좁지 않을 때만
             short = min(g['x1'] - g['x0'], g['y1'] - g['y0'])
@@ -1106,7 +1596,7 @@ class ObjectMemory:
                 return
         if kind == 'bottle':
             cx, cy = (g['x0'] + g['x1']) / 2, (g['y0'] + g['y1']) / 2
-            b = dict(self._bottle_fit(cx, cy, self.floor), top=p['c']['top'])
+            b = dict(self._bottle_fit(cx, cy, self.floor, 'x' if g['x1'] - g['x0'] > g['y1'] - g['y0'] else 'y'), top=p['c']['top'])
             o = self._new(b, p['c'], p['c']['bottom'], t, load, 'bottle')
             o['from_geom'] = dict(g)
             o['light'] = True                          # 무게로 확인 못 한 물통: 모양이 안 보이면 없앤다
@@ -1121,8 +1611,9 @@ class ObjectMemory:
                 o['kind'] != 'bottle' and _overlap_min(o, g) > .4 and o['top'] < g['top'] - RISE
                 and (area(g) > PARTIAL_AREA * area(o) or o['top'] - o['bottom'] < PARTIAL_H))]
             # 무게로 먼저 만든 물통 자리에 상자가 나타났다 = 상자를 놓다가 잠깐 멈춘 무게였다
-            for o in [q for q in self.objs if q.get('from_event') and t - q['born'] <= FAST_S + LATE_S
-                      and (_overlap_min(q, g) > .3 or _overlap_min(q['from_geom'], g) > .3)]:
+            back = self.box_gone_geom is not None and t - self.box_gone_t <= BOX_BACK_S and _overlap_min(self.box_gone_geom, g) > .7 and abs(self.box_gone_geom['top'] - g['top']) <= MERGE_TOP
+            for o in [] if back else [q for q in self.objs if q.get('from_event') and t - q['born'] <= FAST_S + LATE_S
+                                      and (_overlap_min(q, g) > .3 or _overlap_min(q['from_geom'], g) > .3)]:
                 self.objs.remove(o)
                 self._note('물건 #%d 지움 (물통이 아니라 놓는 중인 상자였다)', o['id'])
             if self._same_box(g, dw, t):
@@ -1142,6 +1633,10 @@ class ObjectMemory:
             self.loads.append((t, float(load)))
         if belts is not None and None not in belts:
             self.belts.append((t, float(belts[0]), float(belts[1])))
+        sn = frame['hdr'].get('sensors') or {}
+        if sn.get('cog_x_mm') is not None and sn.get('cog_y_mm') is not None and abs(sn.get('imu1_ax_G') or 0) < FOLLOW_ACC and abs(sn.get('imu1_ay_G') or 0) < FOLLOW_ACC \
+                and abs(sn.get('imu1_gz_dps') or 0) < FOLLOW_GYRO:
+            self.cogs.append((t, float(sn['cog_x_mm']), float(sn['cog_y_mm'])))
         self.w = self._load(t - 1.0, t)
         if self.w is None and load is not None:
             self.w = float(load)
@@ -1153,9 +1648,10 @@ class ObjectMemory:
         self._steps(t, hm)
         self._bottle_from_weight(t, load, hm, frame, floor)
         self._cold_bottle(t, load, floor)
+        self._cold_step(t, load, floor, hm)
         for c in list(cands) + self.flat_now:
             kind = c.get('kind') or 'box'
-            if abs((c['x0'] + c['x1']) / 2) > PLATE_X:  # 판 밖 (바닥에 놓인 짐 · 사람)
+            if abs((c['x0'] + c['x1']) / 2) > PLATE_X or (c['y0'] + c['y1']) / 2 > PLATE_Y:  # 판 밖 (바닥에 놓인 짐 · 사람)
                 continue
             same = [o for o in self.objs if o['kind'] != 'bottle' and _overlap_min(o, c) > .4 and abs(o['top'] - c['top']) <= TOP_TOL]
             if same:
@@ -1194,8 +1690,12 @@ class ObjectMemory:
             if self._gone(o, frame, t, load, hm):
                 self.objs.remove(o)
                 self._note('물건 #%d 없어짐 (%s)', o['id'], o['kind'])
+                if o.get('before') is not None:        # 지금 사진에는 이 물통이 찍혀 있을 수 있다
+                    self.before = o['before']
                 if o['kind'] != 'bottle':              # 무게 계단이 상자 없어지기 조금 전에 왔어도 물통으로 치지 않는다
                     self.box_gone_t, self.box_gone_dw = t, o.get('dw')
+                    self.box_gone_geom = {k: o[k] for k in GEOM}
+                    self._forget_box(o)
                     if self.drop_event is not None and t - self.drop_event[0] <= BOX_DROP_S and self._box_drop(t, self.drop_event[1]):
                         self.drop_event = None
                 for q in self.objs:
@@ -1204,6 +1704,8 @@ class ObjectMemory:
         if ex is not None:
             self.objs.remove(ex)
             self.drop_event = None                     # 이 무게 감소는 이 물통으로 처리했다
+            if ex.get('before') is not None:
+                self.before = ex['before']
             self._note('물통 #%d 없앰 (물통 무게 %.0f g 를 총무게 %.0f g 로 설명 못 함)', ex['id'], ex['weight'], self.level[0])
         res = []
         for o in sorted(self.objs, key=lambda q: q['top']):
@@ -1214,6 +1716,7 @@ class ObjectMemory:
             bottom = self._bottom(o, floor)
             if o['kind'] == 'bottle':                  # 눕힌 2 L 고정. 찍힌 모양으로 방향 · 자리를 고치고, 안 찍히면 후보 중심이 오래 벗어날 때 그리로 옮긴다
                 o['top'] = bottom + BOTTLE_2L[0]
+                self._bottle_follow(o, t, floor)
                 self._bottle_refit(o, t, floor)
                 recent = [(x, y) for ts, x, y in o['centers'] if t - ts <= GEOM_HOLD]
                 if len(recent) >= 8 and not o.get('band'):
@@ -1222,7 +1725,7 @@ class ObjectMemory:
                         o.update(self._bottle_fit(mx, my, floor))
                         o['centers'].clear()
             res.append(dict(id=o['id'], x0=o['x0'], x1=o['x1'], y0=o['y0'], y1=o['y1'], bottom=bottom, top=o['top'],
-                            color=np.clip(o['color'], 0, 1), kind=o['kind'], shape=o['shape'], held=False, src=o['cand']))
+                            color=np.clip(o['color'], 0, 1), kind=o['kind'], shape=o['shape'], held=False, src=o['cand'], cap=o.get('cap')))
         self._save(t)
         return res
 
@@ -1270,7 +1773,7 @@ class StackLayers:
 
     # ------------------------------------------------------------ 바닥 (화물 받침면)
     def find_floor(self, top, below):
-        z = top[:, 2]
+        z = top[(np.abs(top[:, 0]) <= PLATE_X + .02) & (top[:, 1] <= PLATE_Y), 2]     # 판 위 점만 (판 옆 · 뒤 바닥의 낮은 물건을 받침면으로 잡으면 판 전체가 상자로 나온다)
         z = z[z < below - .08]
         if len(z) < 60:
             return None
@@ -1389,6 +1892,12 @@ class StackLayers:
         boxes = list(boxes or [])
         if 'depth' not in frame or 'surface' not in hdr:
             return boxes, self.floor
+        if self.floor is None:                            # 상자 후보가 없어도 판 높이를 안다 (낮은 상자는 후보가 안 되어 받침면을 못 정하고, 그러면 상자를 못 찾았다)
+            f = plate_floor(frame)
+            if f is not None:
+                self.floors.append(f)
+                if len(self.floors) >= 3:
+                    self.floor = float(np.median(self.floors))
         t_now = float(hdr.get('t_run') or 0)
         sens = hdr.get('sensors') or {}
         load = sens.get('total_g')
@@ -1397,7 +1906,7 @@ class StackLayers:
             self.ms = (time.perf_counter() - t0) * 1000
             return self.memory.update([], frame, t_now, self.floor, load, belts), self.floor
         fp, fc, tp, ap, ac = self.cloud(frame)
-        solid = [b for b in boxes if b.get('shape') != 'cylinder' and b['top'] - b['bottom'] >= .06]
+        solid = [b for b in boxes if b.get('shape') != 'cylinder' and b['top'] - b['bottom'] >= .06 and (b['y0'] + b['y1']) / 2 <= PLATE_Y]
         if solid:
             f = self.find_floor(tp, min(b['top'] for b in solid))
             if f is not None:
