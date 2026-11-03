@@ -25,6 +25,7 @@ from twin.twin_core import world_rotation, summarize                            
 from acquisition.errlog import Edge, errlog                                              # noqa: E402  logs/errors_live_twin.log
 
 W, H, FPS = 848, 480, 30
+STATS_Y1 = .50                                                      # 헤더 stats 를 낼 범위 끝 (m)
 SESSION = os.urandom(8).hex()
 STATE = dict(sensors=None, sensor_t=0.0, paused=False, acc=None)
 
@@ -152,7 +153,8 @@ def main():
     ap.add_argument('--hz', type=float, default=10)
     ap.add_argument('--mirror', default='', help='같은 프레임을 따로 받을 곳 (예: Isaac Sim 트윈 PC host:5010)')
     ap.add_argument('--cell', type=float, default=0.01)
-    ap.add_argument('--roi', type=float, nargs=4, default=[-.27, .27, .05, .50], metavar=('X0', 'X1', 'Y0', 'Y1'))
+    # y 는 판 먼 쪽 끝(.63) 너머 .75 까지: 끝쪽에 놓거나 판 밖으로 조금 나온 화물도 보게 (2026-11-03). 판 밖 물건은 디스플레이가 거른다
+    ap.add_argument('--roi', type=float, nargs=4, default=[-.27, .27, .05, .75], metavar=('X0', 'X1', 'Y0', 'Y1'))
     ap.add_argument('--sensor-port', type=int, default=5020)
     ap.add_argument('--plate-z', type=float, default=-0.579, help='카메라 기준 판 윗면 높이 예상값 (m)')
     ap.add_argument('--plate-above-floor', type=float, default=0.208, help='판 윗면이 기준(방바닥)보다 높은 만큼 (m)')
@@ -244,6 +246,7 @@ def main():
         bounds = ((args.roi[0], args.roi[1]), (args.roi[2], args.roi[3]))
         hm = ColorHeightMapper(intr, cintr, ex_R, ex.translation, scale, R, bounds, args.cell, ref_h)
         print('설치 보정: ref_h %.3f m, 격자 %dx%d @ %.0f cm, ROI %s' % (ref_h, hm.nx, hm.ny, args.cell * 100, bounds), flush=True)
+        stats_ny = int(np.ceil((STATS_Y1 - hm.y0) / args.cell))
         intr_d = {k: getattr(intr, k) for k in ('width', 'height', 'fx', 'fy', 'ppx', 'ppy')}
 
         # 받는 곳마다 따로 도는 송신 스레드: 밀리면 가장 최근 프레임만 보낸다. 한 곳이 꺼져 있으면 연결 시도(3 s x 2)가
@@ -340,7 +343,7 @@ def main():
                 v=2, session=SESSION, seq=seq, send_t=time.time(), run='live', scenario=None, src=['live', 'd435i'],
                 t_run=round(now - t0, 3), frame_ts=d.get_timestamp() / 1000,
                 grid=dict(nx=hm.nx, ny=hm.ny, cell=args.cell, x0=hm.x0, y0=hm.y0, unit='mm', nodata=-32768),
-                stats=summarize(h, args.cell, hm.x0, hm.y0),
+                stats=summarize(h[:stats_ny], args.cell, hm.x0, hm.y0),     # 요약 값의 뜻이 옛 기록과 같게 y .50 까지만
                 calib=dict(ref_h=round(hm.ref_h, 4)),
                 cam_accel=np.round(STATE['acc'], 3).tolist() if STATE['acc'] else None,
                 sensors=sens, sensor_age=age if sens else None, hz=args.hz,

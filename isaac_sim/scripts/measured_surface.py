@@ -125,7 +125,7 @@ class DepthSurface:
         x0, x1 = float(grid['x0']), float(grid['x0']) + grid['nx'] * float(grid['cell'])
         y0, y1 = float(grid['y0']), float(grid['y0']) + grid['ny'] * float(grid['cell'])
         self.plate_hit[:, 0] = np.clip(self.plate_hit[:, 0], x0, x1)
-        self.plate_hit[:, 1] = np.clip(self.plate_hit[:, 1], y0, y1)
+        self.plate_hit[:, 1] = np.clip(self.plate_hit[:, 1], y0, min(y1, .63))     # plate's far end
         self.plate_hit[:, 2] = plate_z
         self.roi = (x0, x1, y0, y1)
 
@@ -151,6 +151,8 @@ class DepthSurface:
         d = sub.reshape(-1).astype(np.float32) / 1000.
         valid = d > 0
         p = self.rays * d[:, None]
+        # Floor behind the plate's far end (y .63; the ROI reaches past it) is not surface. Cargo overhanging the end stays.
+        valid &= ~((p[:, 1] > .63) & (p[:, 2] - self.ref_h - PLATE_ABOVE_FLOOR < .01))
         if valid.any() and not valid.all():
             # Pixels without depth take the x/y of the nearest cargo pixel at plate height, so the
             # cargo silhouette gets vertical sides instead of a tent stretched to the plate behind it.

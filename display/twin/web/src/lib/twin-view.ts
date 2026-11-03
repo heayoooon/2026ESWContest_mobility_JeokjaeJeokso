@@ -96,8 +96,9 @@ export function cogOffset(state: TwinState | null) {
   if (!c || c.x === null || c.y === null) return null
   const dx = c.x - bed.l / 2
   const dy = c.y - bed.w / 2
-  const side = Math.abs(dy) >= Math.abs(dx) ? (dy > 0 ? '뒤' : '앞') : dx > 0 ? '오른' : '왼'
-  return { dx, dy, side, mm: Math.max(Math.abs(dx), Math.abs(dy)), dist: Math.hypot(dx, dy) }
+  const yAxis = Math.abs(dy) / bed.w >= Math.abs(dx) / bed.l    // 판정 문구와 같은 비율 비교
+  const side = yAxis ? (dy > 0 ? '뒤' : '앞') : dx > 0 ? '오른' : '왼'
+  return { dx, dy, side, mm: Math.abs(yAxis ? dy : dx), dist: Math.hypot(dx, dy) }
 }
 
 function cogView(state: TwinState, level: Level, reason: string): CheckView {
@@ -134,10 +135,31 @@ function cogView(state: TwinState, level: Level, reason: string): CheckView {
   }
 }
 
-function moveView(state: TwinState, level: Level, reason: string): CheckView {
+function moveView(state: TwinState, level: Level, reason: string, loadMode = false): CheckView {
   const c = state.sensors.cog_mm
   const p = state.sensors.cog_pred_mm
   const gap = c && p && c.x !== null && c.y !== null && p.x !== null && p.y !== null ? Math.hypot(c.x - p.x, c.y - p.y) : null
+  if (loadMode) {
+    // 적재 모드: 값만 보여 주고 경보는 안 낸다 (level null). 싣고 내리는 것만으로 위험이 붙잡히고, 그 판정은 주행으로 바꿀 때 지워진다.
+    // 화물이 100 g 미만이면 센서 파이가 무게중심을 안 내고 기준도 버린다 -> 잴 이동이 없으니 0 mm (다음에 올린 첫 값도 0 이다)
+    const empty = !c && num(state.sensors.total_g) !== null
+    const now = gap ?? (empty ? 0 : null)
+    const lost = c ? 'IMU 없음' : '셀 값 없음'
+    return {
+      key: 'move',
+      name: NAMES.move,
+      level: null,
+      reason: '',    // 센서 판정 문구 ('최고 위험' 유지) 는 적재 중에 뜻이 없다: 주행으로 바꿀 때 저절로 지워진다
+      value: now === null ? lost : `${Math.round(now)}`,
+      unit: now === null ? '' : 'mm',
+      ratio: now === null ? null : Math.max(0, now / 80),
+      mark: 0.5,
+      word: empty ? '화물 없음' : '',
+      sentence: empty ? '판 위에 화물이 없습니다' : '적재 중: 경보 없이 값만 보여 줍니다',
+      detail: now === null ? lost : empty ? '화물 100 g 미만이라 잴 이동이 없음' : `기준 무게중심에서 ${Math.round(now)} mm`,
+      tag: '화물 이동',
+    }
+  }
   const mm = pick(/([\d.]+)\s*mm/, reason)
   const allow = pick(/허용\s*([\d.]+)\s*mm/, reason)
   const shown = level && mm !== null ? mm : gap
@@ -221,11 +243,11 @@ function weight(c: CheckView) {
   return lv * 10 + kind
 }
 
-/** hideMove: 적재 모드에서는 화물 이동을 안 본다 (올리고 내리는 중이라 항상 움직인다) */
-export function buildView(state: TwinState | null, connected: boolean, hideMove = false): TwinView {
+/** loadMode: 적재 모드에서는 화물 이동 칸을 경보 없이 값만 보여 준다 (올리고 내리는 중이라 항상 움직인다) */
+export function buildView(state: TwinState | null, connected: boolean, loadMode = false): TwinView {
   const risk = state?.risk ?? null
   const judged = !!risk && risk.level !== null && risk.level !== undefined
-  const checks: CheckView[] = (hideMove ? CHECK_ORDER.filter((k) => k !== 'move') : CHECK_ORDER).map((key) => {
+  const checks: CheckView[] = CHECK_ORDER.map((key) => {
     const rc = risk?.checks?.find((c) => c.key === key)
     let level: Level = judged ? ((rc?.level ?? 0) as Level) : null
     // 벨트는 센서 쪽 level 도 있다 (판정이 없을 때 쓰지 않는다)
@@ -238,7 +260,7 @@ export function buildView(state: TwinState | null, connected: boolean, hideMove 
     }
     if (key === 'load') return loadView(state, level, reason)
     if (key === 'cog') return cogView(state, level, reason)
-    if (key === 'move') return moveView(state, level, reason)
+    if (key === 'move') return moveView(state, level, reason, loadMode)
     return beltView(state, key, level, reason)
   })
 

@@ -4,8 +4,9 @@
  * 백엔드는 GET /api/stream 으로 Server-Sent Events 를 약 10 Hz 로 보낸다. 각 메시지 = `data: <TwinState JSON>\n\n`.
  * GET /api/state 는 같은 JSON 한 번. 아래 필드 이름 · 단위를 바꾸면 양쪽을 같이 바꾼다.
  *
- * 좌표계 (월드, 미터): 카메라 설치 보정 기준. x = 오른쪽, y = 앞(카메라에서 멀어지는 쪽), z = 위.
- * z 는 방바닥 = 0. 화물 받침판(적재면) 높이 = base. 트럭 앞 방향과 로드셀 위치는 카메라와 정합된 적이 없다 (도식으로만 그린다).
+ * 좌표계 (월드, 미터): 카메라 설치 보정 기준. x = 카메라 오른쪽, y = 카메라에서 멀어지는 쪽, z = 위. 카메라 가까운 쪽이 트럭 앞이다.
+ * 로드셀 이름 · 무게중심 · 벨트 c1 c2 · 판정 문구는 센서 파이 그대로다 (N 줄 · c1 = 앞 = 카메라 쪽).
+ * z 는 방바닥 = 0. 화물 받침판(적재면) 높이 = base.
  */
 
 export type TwinBox = {
@@ -22,6 +23,8 @@ export type TwinBox = {
   top: number
   /** 카메라에서 본 대표색 0..1 */
   color: [number, number, number]
+  /** 물병 뚜껑 쪽: -1 = x0 · y0, 1 = x1 · y1. 뚜껑이 안 보였으면 없음 */
+  cap?: -1 | 1 | null
   /** 잠깐 안 보여서 직전 모양을 유지 중 */
   held: boolean
   /** 0.5 s 넘게 지속된 형상 변화가 이 블록에 확정됨 (빨갛게 강조) */
@@ -139,8 +142,8 @@ export type TwinState = {
   /** 새 카메라 사진이 생길 때마다 1 씩 커진다. GET /api/camera.jpg?seq=<n> */
   camera_seq: number
   volume: { level: number; muted: boolean }
-  /** 카메라 -> 적재판 위치 맞춤 (m). 판 X = 카메라 x - cx, 판 Z(뒤 +) = -(카메라 y - cy).
-   *  서버가 '카메라로 본 화물 부피 중심 = 로드셀 무게중심' 이 되게 낸 값 (가감속 · 화물 이동 없을 때의 중앙값). 옛 서버는 없음 */
+  /** 카메라 -> 적재판 위치 맞춤 (m). 판 X = -(카메라 x - cx), 판 Z(뒤 +) = 카메라 y - cy.
+   *  run/reg.json 값 (지금은 합판 실측 가운데). 파일이 없으면 서버가 '카메라로 본 화물 부피 중심 = 로드셀 무게중심' 이 되게 다시 배운다. 옛 서버는 없음 */
   reg?: { cx: number; cy: number; n: number } | null
 }
 

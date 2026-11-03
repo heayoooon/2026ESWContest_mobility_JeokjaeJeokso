@@ -185,7 +185,8 @@ def box_json(b):
                 bottom=num(b['bottom'], 4), top=num(b['top'], 4),
                 color=[num(min(max(x, 0.0), 1.0), 3) for x in c],
                 held=bool(b.get('held', False)), alert=bool(scene_v3.is_alert(b.get('src', b))) if b.get('kind') != 'side' and ('src' in b or 'kind' not in b) else False,
-                kind=b.get('kind') if b.get('kind') in ('side', 'item', 'bottle') else 'box')
+                kind=b.get('kind') if b.get('kind') in ('side', 'item', 'bottle') else 'box',
+                cap=b.get('cap') if b.get('cap') in (-1, 1) else None)     # 물병 뚜껑 쪽: -1 = x0 · y0, 1 = x1 · y1
 
 
 def weight(v, nd=None):
@@ -218,7 +219,7 @@ def sensors_json(s, age):
                 yaw_rate=num(s.get('imu1_gz_dps'), 2),
                 ax=num(s.get('imu1_ax_G'), 4), ay=num(s.get('imu1_ay_G'), 4), az=num(s.get('imu1_az_G'), 4),
                 age_s=num(age, 3),
-                # 2026-10-04 부터 (센서 파이 analysis/): 뒤 벨트 c2, 벨트별 필요 장력, mm 무게중심, 적재 kg
+                # 2026-10-04 부터 (센서 파이 analysis/): 벨트 2 개, 벨트별 필요 장력, mm 무게중심, 적재 kg
                 load_kg=weight(s.get('load_kg'), 3) if s.get('load_kg') is not None else weight((s.get('total_g') or 0) / 1000, 3) if s.get('total_g') is not None else None,
                 max_kg=num(s.get('rated_kg')) or MAX_KG,
                 # 2026-10-08 판정 (팀 analysis/total.py): 적정 적재중량과 주의 · 경고 · 위험 % , 셀 합 그대로의 무게
@@ -565,9 +566,9 @@ class Receiver(tv.Receiver):
 
 # ---------------------------------------------------------------- 처리 (twin_app.py 의 화면 없는 판)
 class Registration:
-    """카메라 <-> 적재판 위치 맞추기. 카메라와 판의 상대 위치는 잰 적이 없으므로, 로드셀이 잰 무게중심을 기준으로 맞춘다.
+    """카메라 <-> 적재판 위치 맞추기. 합판 실측 가운데는 (-.015, .35) 이고 지금 reg.json 도 그 값이다. 없으면 로드셀이 잰 무게중심으로 다시 배운다.
     가감속이 없을 때 '카메라로 본 화물 부피 중심' 이 '로드셀 무게중심(하중 이동을 뺀 값)' 위에 오도록 하는 이동량 (cx, cy):
-        판 X = 카메라 x - cx,   판 Z(뒤 +) = -(카메라 y - cy)
+        판 X = -(카메라 x - cx),   판 Z(뒤 +) = 카메라 y - cy   (카메라 쪽이 앞이고 카메라를 보고 선 셈이라 좌우도 반대다)
     카메라는 판에 고정이라 이 값은 상수다 -> 프레임마다 낸 값의 중앙값을 쓰고 run/reg.json 에 저장해 다음 실행에도 쓴다.
     화물이 고르게 차 있다고 보는 근사라 오차는 수 cm 정도."""
     N = 900
@@ -607,7 +608,7 @@ class Registration:
             yc = sum(w * (b['y0'] + b['y1']) / 2 for w, b in zip(v, solid)) / tot
             X = -BED_L_MM / 2000 + float(cx_mm) / 1000
             Z = -BED_W_MM / 2000 + float(cy_mm) / 1000
-            self.est.append((xc - X, yc + Z))
+            self.est.append((xc + X, yc - Z))
         if len(self.est) >= 20:
             m = (float(np.median([e[0] for e in self.est])), float(np.median([e[1] for e in self.est])))
             if self.value is None or max(abs(m[0] - self.value[0]), abs(m[1] - self.value[1])) > self.MOVE:
@@ -757,14 +758,15 @@ class Twin:
             self.boxes = [dict(x) for x in sc['boxes']]
             if sc.get('base') is not None:
                 self.base = float(sc['base'])
+        sens = hdr.get('sensors')
         try:
-            self.reg.update(self.boxes, hdr.get('sensors'))
+            self.reg.update(self.boxes, sens)
         except Exception:
             log.exception('registration')
         self.build_ms.append((time.perf_counter() - t0) * 1000)
         info = dict(self.mesh.twin.info)
         self.alerts.update(hdr, info)
-        rk = risk_json(hdr.get('sensors'))
+        rk = risk_json(sens)
         if rk is not None:          # 팀 파이프라인 판정(Hold 로 이미 걸러짐)을 그대로. 소리는 단계(주의 · 경고 · 위험) + 이유 음성
             now = time.time()
             self.alerts.active = {c['key']: (c['name'] + (' · ' + c['reason'] if c['reason'] else ''), now + 1.0, c['level'] >= 2,
@@ -799,9 +801,9 @@ class Twin:
             t_run=num(hdr.get('t_run'), 3), dur_run=num(hdr.get('dur_run'), 3),
             grid=grid, base=num(self.base, 4) or 0.0,
             boxes=[box_json(b) for b in self.boxes],
-            sensors=sensors_json(hdr.get('sensors'), hdr.get('sensor_age')),
+            sensors=sensors_json(sens, hdr.get('sensor_age')),
             reg=self.reg.json(),
-            risk=risk_json(hdr.get('sensors')),
+            risk=risk_json(sens),
             twin=dict(state='ready' if ready else 'building',
                       built=int(info.get('built', BUILD_N if ready else 0)),
                       changed_pct=num(info.get('changed_pct'), 2) or 0.0,

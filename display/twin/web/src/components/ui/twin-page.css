@@ -577,7 +577,8 @@
 .tw-cogmap .z2 { fill: color-mix(in srgb, var(--alert) 50%, var(--canvas)); }
 .tw-cogmap .z1 { fill: color-mix(in srgb, var(--warn) 45%, var(--canvas)); }
 .tw-cogmap .z0 { fill: color-mix(in srgb, var(--ok) 28%, var(--canvas)); }
-.tw-cogmap .cross { stroke: rgba(38, 38, 38, 0.25); stroke-width: 3; stroke-dasharray: 10 8; }
+.tw-cogmap .cross { stroke: rgba(38, 38, 38, 0.6); stroke-width: 6; }
+.tw-cogmap .lit { fill: var(--c); opacity: .38; stroke: none; }
 .tw-cogmap .dot { fill: var(--surface-dark); stroke: var(--canvas); stroke-width: 6; transition: cx 0.3s, cy 0.3s; }
 .tw-cogmap .halo { fill: var(--c); opacity: 0.55; transition: cx 0.3s, cy 0.3s; }
 .tw-cogmap.lv3 .halo { animation: tw-blink 0.9s steps(1, end) infinite; }

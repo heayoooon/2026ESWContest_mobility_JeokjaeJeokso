@@ -103,7 +103,7 @@ export function CheckTiles({ view, focus, onPick }: { view: TwinView; focus: Che
 
 function Tile({ c, on, dim, onPick }: { c: CheckView; on: boolean; dim: boolean; onPick: (k: CheckKey) => void }) {
   const lv = dim ? null : c.level
-  const word = dim ? '' : c.level === null ? '' : c.level === 0 ? '정상' : c.word
+  const word = dim ? '' : c.level === null ? c.word : c.level === 0 ? '정상' : c.word
   return (
     <button type="button" className={`tw-tile ${lvClass(lv)}${on ? ' sel' : ''}`} aria-pressed={on} onClick={() => onPick(c.key)}>
       <div className="tw-tile-head">
@@ -426,7 +426,7 @@ export function LevelLegend() {
   )
 }
 
-/** 무게중심 지도 (왼쪽 막대): 판을 위에서 본 모양. 팀 판정의 구역(가장자리까지 셀 간격의 25 · 15 · 7 %)을 색 띠로,
+/** 무게중심 지도 (왼쪽 막대): 판을 위에서 본 모양 (위 = 앞 = 카메라 쪽). 팀 판정의 구역(가장자리까지 셀 간격의 25 · 15 · 7 %)을 색 띠로,
  *  지금 무게중심을 점으로 (점 색 = 무게중심 단계). 아래에 기울기 숫자 */
 export function CogMap({ state, level, roll, pitch, dim }: { state: TwinState | null; level: Level; roll: number | null; pitch: number | null; dim: boolean }) {
   const bed = state?.sensors.bed_mm ?? { l: 250, w: 392 }
@@ -452,6 +452,11 @@ export function CogMap({ state, level, roll, pitch, dim }: { state: TwinState | 
           const b = band(z.p)
           return <rect key={z.p} className={z.cls} x={b.x} y={b.y} width={b.w} height={b.h} rx={10} />
         })}
+        {has && level
+          ? [[0, 0], [1, 0], [0, 1], [1, 1]]
+              .filter(([a, b]) => (Math.abs(x - L / 2) <= 0.1 * L || x > L / 2 === (a === 1)) && (Math.abs(y - W / 2) <= 0.1 * W || y > W / 2 === (b === 1)))
+              .map(([a, b]) => <rect key={`q${a}${b}`} className="lit" x={(a * L) / 2} y={(b * W) / 2} width={L / 2} height={W / 2} />)
+          : null}
         <line className="cross" x1={L / 2} y1={0} x2={L / 2} y2={W} />
         <line className="cross" x1={0} y1={W / 2} x2={L} y2={W / 2} />
         {has && (
